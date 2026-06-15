@@ -24,6 +24,9 @@ import engine
 def index():
     # 현재 렌더된 카드의 체크박스 핸들 (경로 → checkbox) = 선택 상태의 단일 출처.
     checks: dict[str, "ui.checkbox"] = {}
+    # 드래그 중인 이미지 경로 목록(카드 → 다른 그룹으로 끌어 재분류). 서버측 단일 출처.
+    # 선택(체크)된 카드를 끌면 선택 전체, 아니면 그 카드 하나만 담긴다.
+    dragging: dict[str, list[str]] = {"paths": []}
     # 스캔 진행률(워커 스레드가 갱신, UI 타이머가 읽음)
     progress = {"i": 0, "total": 0, "running": False}
 
@@ -51,6 +54,12 @@ def index():
             local_sw = ui.switch("로컬 모드(무료)", value=not has_key)
             img_sw = ui.switch("썸네일도 전송", value=False)
             scan_btn = ui.button("스캔", icon="search")
+        with ui.row().classes("items-center gap-2 w-full"):
+            hints_in = ui.input(
+                "프로젝트 힌트 (쉼표)",
+                placeholder="act-server, hitc, zipath — OCR 에 이 단어가 있으면 해당 프로젝트로 묶음",
+            ).classes("grow")
+            apply_hints_btn = ui.button("힌트로 다시 묶기", icon="auto_awesome").props("outline")
         mode_lbl = ui.label().classes("text-xs text-gray-500")
 
         def refresh_mode():
@@ -72,6 +81,7 @@ def index():
         stats_lbl = ui.label().classes("text-sm")
         sel_lbl = ui.label("선택 0개").classes("text-sm text-primary")
         ui.space()
+        organize_btn = ui.button("그룹 폴더로 정리…", icon="create_new_folder").props("outline")
         trash_sel_btn = ui.button("선택 항목 휴지통으로", icon="delete", color="red")
         refresh_btn = ui.button("새로고침", icon="refresh").props("flat")
 
@@ -108,7 +118,11 @@ def index():
                 title = f"{g}  ({len(items)}개" + (f", 🗑 {dele}" if dele else "") + ")"
                 # 기본은 접힘 — 삭제후보 그룹과 큰 그룹(5장+)만 펼쳐서 노이즈를 줄인다.
                 expand = (g == engine.CLEANUP_GROUP) or len(items) >= 5
-                with ui.expansion(title, value=expand).classes("w-full border rounded"):
+                exp = ui.expansion(title, value=expand).classes("w-full border rounded")
+                # 그룹 전체를 드롭존으로 — 카드를 끌어다 놓으면 그 그룹으로 재분류(접힘 무관).
+                exp.on("dragover.prevent", lambda: None)
+                exp.on("drop", lambda _, name=g: on_drop_to(name))
+                with exp:
                     paths = [it["path"] for it in items]
                     with ui.row().classes("gap-2 mb-2 items-center"):
                         ui.button(
@@ -119,12 +133,41 @@ def index():
                             "해제", on_click=lambda _, ps=paths: select_paths(ps, False)
                         ).props("flat dense")
                         ui.button(
+                            "이름 변경", icon="edit",
+                            on_click=lambda _, name=g: do_rename_group(name),
+                        ).props("flat dense")
+                        ui.button(
+                            "폴더로 이동", icon="drive_file_move",
+                            on_click=lambda _, name=g: do_move_group(name),
+                        ).props("flat dense")
+                        ui.button(
+                            "압축", icon="folder_zip",
+                            on_click=lambda _, name=g: do_zip_group(name),
+                        ).props("flat dense")
+                        ui.button(
                             "이 그룹 휴지통으로", color="red",
                             on_click=lambda _, name=g: do_trash_group(name),
                         ).props("flat dense")
                     with ui.row().classes("flex-wrap gap-3"):
                         for it in items:
                             _thumb_card(it)
+
+    def _start_drag(p: str):
+        # 끄는 카드가 선택돼 있으면 선택 전체를, 아니면 그 카드만 끈다.
+        sel = selected_paths()
+        dragging["paths"] = sel if p in sel else [p]
+
+    def on_drop_to(group: str):
+        paths = dragging.get("paths") or []
+        dragging["paths"] = []
+        if not paths:
+            return
+        n = engine.move_images_to_group(paths, group)
+        if n:
+            label = Path(paths[0]).name if n == 1 else f"{n}개"
+            ui.notify(f"{label} → '{group}' 그룹으로 이동", type="positive")
+            update_stats()
+            render_groups()
 
     def select_paths(paths: list[str], on: bool):
         for p in paths:
@@ -134,13 +177,23 @@ def index():
 
     def _thumb_card(it: dict):
         path = it["path"]
-        with ui.card().classes("p-1").style("width:180px"):
+        card = ui.card().classes("p-1 cursor-move").style("width:180px")
+        card.props("draggable=true")
+        card.on("dragstart", lambda _, p=path: _start_drag(p))
+        with card:
             uri = engine.thumbnail_uri(path)
             if uri:
-                ui.image(uri).classes("w-full").style("height:120px;object-fit:cover")
+                img = ui.image(uri).classes("w-full cursor-pointer").style(
+                    "height:120px;object-fit:cover"
+                )
+                img.props("draggable=false")  # 카드가 드래그되도록 이미지 기본 드래그 끔
+                img.tooltip("클릭=미리보기 · 끌어서 다른 그룹으로 이동")
+                img.on("click", lambda _, it=it: open_preview(it))
             else:
                 ui.label("(미리보기 없음)").classes("text-xs text-gray-400")
-            ui.label(Path(path).name).classes("text-xs truncate w-full").tooltip(Path(path).name)
+            ui.label(Path(path).name).classes(
+                "text-xs truncate w-full cursor-pointer"
+            ).tooltip(Path(path).name).on("click", lambda _, it=it: open_preview(it))
             if it["summary"]:
                 ui.label(it["summary"]).classes("text-xs text-gray-500 truncate w-full")
             checks[path] = ui.checkbox(
@@ -161,11 +214,13 @@ def index():
         progress.update(i=0, total=0, running=True)
         ui.notify("스캔 시작…", type="info")
         try:
+            hints = [h for h in hints_in.value.split(",") if h.strip()]
             res = await run.io_bound(
                 engine.scan_images,
                 root,
                 use_llm=use_llm,
                 with_image=img_sw.value,
+                project_hints=hints,
                 on_item=on_scan_item,
             )
         except Exception as e:
@@ -213,6 +268,153 @@ def index():
         ui.notify(f"{n}개를 휴지통으로 보냈습니다.", type="positive")
         update_stats()
         render_groups()
+
+    async def do_apply_hints():
+        hints = [h for h in hints_in.value.split(",") if h.strip()]
+        if not hints:
+            ui.notify("프로젝트 힌트를 쉼표로 입력하세요. 예: act-server, hitc, zipath", type="warning")
+            return
+        n = await run.io_bound(engine.apply_project_hints, hints)
+        ui.notify(f"{n}개 스크린샷을 힌트 프로젝트로 다시 묶었습니다.", type="positive")
+        update_stats()
+        render_groups()
+
+    async def do_organize_selected():
+        groups = engine.list_groups()
+        if not groups:
+            return
+        default_root = str(engine.default_export_root(path_in.value))
+        boxes: dict[str, "ui.checkbox"] = {}
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label("폴더로 정리할 그룹 선택").classes("font-bold")
+            ui.label("선택한 그룹만 대상 폴더 아래 '<그룹명>/' 폴더로 이동합니다.").classes(
+                "text-xs text-gray-500"
+            )
+
+            def set_all(v: bool):
+                for b in boxes.values():
+                    b.value = v
+
+            with ui.row().classes("gap-2"):
+                ui.button("전체 선택", on_click=lambda: set_all(True)).props("flat dense")
+                ui.button("전체 해제", on_click=lambda: set_all(False)).props("flat dense")
+            with ui.column().classes("max-h-60 overflow-auto w-full gap-0 border rounded p-1"):
+                for name, items in groups.items():
+                    boxes[name] = ui.checkbox(
+                        f"{name}  ({len(items)}개)", value=False
+                    ).classes("text-sm")
+            dest_in = ui.input("대상 루트 폴더", value=default_root).classes("w-full")
+            with ui.row().classes("justify-end w-full"):
+                ui.button("취소", on_click=lambda: dialog.submit(False)).props("flat")
+                ui.button("정리", icon="create_new_folder",
+                          on_click=lambda: dialog.submit(True))
+        ok = await dialog
+        if not ok:
+            return
+        chosen = [n for n, b in boxes.items() if b.value]
+        if not chosen:
+            ui.notify("정리할 그룹을 하나 이상 선택하세요.", type="warning")
+            return
+        total = 0
+        try:
+            for name in chosen:
+                n, _ = await run.io_bound(engine.move_group, name, dest_in.value, deletable=False)
+                total += n
+        except Exception as e:
+            ui.notify(f"정리 실패: {e}", type="negative")
+            update_stats(); render_groups()
+            return
+        ui.notify(f"{total}개를 {len(chosen)}개 그룹 폴더로 정리했습니다.", type="positive")
+        update_stats()
+        render_groups()
+
+    async def do_rename_group(name: str):
+        new = await _prompt_path(
+            f"'{name}' 그룹의 새 이름 (정리 시 이 이름의 폴더가 만들어집니다):", name
+        )
+        if not new or not new.strip() or new.strip() == name:
+            return
+        n = await run.io_bound(engine.rename_group, name, new.strip())
+        ui.notify(f"'{name}' → '{new.strip()}' ({n}개) 이름을 바꿨습니다.", type="positive")
+        update_stats()
+        render_groups()
+
+    async def do_move_group(name: str):
+        paths = engine.collect_paths(name, deletable=False)
+        if not paths:
+            return
+        default_root = str(engine.default_export_root(path_in.value))
+        dest = await _prompt_path(
+            f"'{name}' 그룹 {len(paths)}개를 옮길 대상 루트 폴더 (그 아래 '{name}' 폴더가 생깁니다):",
+            default_root,
+        )
+        if not dest:
+            return
+        try:
+            n, folder = await run.io_bound(engine.move_group, name, dest, deletable=False)
+        except Exception as e:
+            ui.notify(f"이동 실패: {e}", type="negative")
+            return
+        ui.notify(f"{n}개를 {folder} 로 이동했습니다.", type="positive")
+        update_stats()
+        render_groups()
+
+    async def do_zip_group(name: str):
+        paths = engine.collect_paths(name, deletable=False)
+        if not paths:
+            return
+        default_out = str(
+            engine.default_export_root(path_in.value) / f"{engine.safe_dirname(name)}.zip"
+        )
+        out = await _prompt_path(
+            f"'{name}' 그룹 {len(paths)}개를 압축할 zip 경로 (원본은 그대로 둡니다):",
+            default_out,
+        )
+        if not out:
+            return
+        try:
+            n, dest = await run.io_bound(engine.zip_group, name, out, deletable=False)
+        except Exception as e:
+            ui.notify(f"압축 실패: {e}", type="negative")
+            return
+        ui.notify(f"{n}개를 압축했습니다: {dest}", type="positive")
+
+    def open_preview(it: dict):
+        path = it["path"]
+        with ui.dialog().props("maximized") as dialog, ui.card().classes(
+            "w-full h-full items-center"
+        ):
+            with ui.row().classes("items-center w-full gap-2"):
+                ui.label(Path(path).name).classes("font-bold text-lg")
+                ui.space()
+                ui.button("Finder 에서 보기", icon="folder_open",
+                          on_click=lambda: _reveal(path)).props("flat")
+                ui.button(icon="close", on_click=dialog.close).props("flat round")
+            uri = engine.thumbnail_uri(path, max_edge=2200)
+            if uri:
+                # 남는 공간을 꽉 채워 가능한 한 크게(원본 비율 유지).
+                ui.image(uri).classes("grow w-full").style("object-fit:contain;min-height:0")
+            meta = f"그룹: {it.get('grp') or it.get('project') or '-'}  ·  종류: {it.get('kind') or '-'}"
+            ui.label(meta).classes("text-sm text-gray-500")
+            if it.get("summary"):
+                ui.label(it["summary"]).classes("text-sm text-gray-500")
+            ui.label(path).classes("text-xs text-gray-400 break-all")
+        dialog.open()
+
+    def _reveal(path: str):
+        try:
+            engine.reveal_in_finder(path)
+        except Exception as e:
+            ui.notify(str(e), type="negative")
+
+    async def _prompt_path(message: str, default: str) -> str | None:
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label(message).classes("text-sm")
+            inp = ui.input(value=default).classes("w-full")
+            with ui.row().classes("justify-end w-full"):
+                ui.button("취소", on_click=lambda: dialog.submit(None)).props("flat")
+                ui.button("확인", on_click=lambda: dialog.submit(inp.value))
+        return await dialog
 
     async def _confirm(message: str) -> bool:
         with ui.dialog() as dialog, ui.card():
@@ -268,6 +470,8 @@ def index():
         ui.timer(1.2, _restart, once=True)  # notify 가 렌더된 뒤 재시작
 
     scan_btn.on_click(do_scan)
+    apply_hints_btn.on_click(do_apply_hints)
+    organize_btn.on_click(do_organize_selected)
     trash_sel_btn.on_click(do_trash_selected)
     refresh_btn.on_click(lambda: (update_stats(), render_groups()))
     update_btn.on_click(do_update)
