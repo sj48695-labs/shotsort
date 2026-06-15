@@ -649,3 +649,48 @@ def stats() -> Stats:
         "SELECT COUNT(DISTINCT COALESCE(grp,project)) c FROM images"
     ).fetchone()["c"]
     return Stats(total=total, groups=ngroups, deletable=dele, deletable_bytes=size)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 자동 업데이트 (git 기반) — 앱이 원격과 비교해 뒤처지면 알림, 원클릭 pull
+# ─────────────────────────────────────────────────────────────────────────────
+def repo_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _git(*args: str) -> tuple[int, str]:
+    r = subprocess.run(
+        ["git", "-C", str(repo_dir()), *args], capture_output=True, text=True
+    )
+    return r.returncode, (r.stdout + r.stderr).strip()
+
+
+@dataclass
+class UpdateStatus:
+    available: bool = False
+    behind: int = 0          # 원격이 로컬보다 앞선 커밋 수
+    error: str | None = None
+
+
+def check_update(fetch: bool = True) -> UpdateStatus:
+    """원격(upstream)과 비교해 업데이트 가능 여부 확인. git 저장소가 아니면 error."""
+    if _git("rev-parse", "--is-inside-work-tree")[0] != 0:
+        return UpdateStatus(error="git 저장소가 아님")
+    if fetch:
+        code, out = _git("fetch", "--quiet")
+        if code != 0:
+            return UpdateStatus(error=f"fetch 실패: {out[:200]}")
+    code, up = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if code != 0:
+        return UpdateStatus(error="upstream(원격 추적 브랜치) 없음")
+    code, out = _git("rev-list", "--count", f"HEAD..{up}")
+    if code != 0:
+        return UpdateStatus(error=out[:200])
+    behind = int(out or "0")
+    return UpdateStatus(available=behind > 0, behind=behind)
+
+
+def apply_update() -> tuple[bool, str]:
+    """fast-forward pull 로 최신 코드를 받는다. 적용 후 재시작 필요."""
+    code, out = _git("pull", "--ff-only")
+    return code == 0, out[:300]

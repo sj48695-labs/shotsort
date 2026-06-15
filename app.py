@@ -12,6 +12,7 @@ data-URI 라 별도 정적 파일 서버가 필요 없다.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 from nicegui import run, ui
@@ -30,6 +31,17 @@ def index():
     ui.label(
         "스크린샷을 프로젝트별로 묶고, 지워도 되는 것을 체크해서 한꺼번에 휴지통으로 보냅니다 (복구 가능)."
     ).classes("text-sm text-gray-500")
+
+    # ── 업데이트 알림 배너 (기본 숨김, 로드 시 백그라운드 체크) ───────────────
+    update_banner = ui.row().classes(
+        "w-full items-center gap-3 p-2 rounded"
+    ).style("background:#fff3cd")
+    update_banner.visible = False
+    with update_banner:
+        update_lbl = ui.label().classes("text-sm")
+        ui.space()
+        update_btn = ui.button("업데이트", icon="system_update").props("dense")
+        ui.button("나중에", on_click=lambda: update_banner.set_visibility(False)).props("flat dense")
 
     # ── 스캔 컨트롤 ──────────────────────────────────────────────────────────
     has_key = engine.has_api_key()
@@ -219,15 +231,43 @@ def index():
         elif prog_lbl.text:
             prog_lbl.text = ""
 
+    async def check_for_update():
+        st = await run.io_bound(engine.check_update)
+        if st.available:
+            update_lbl.text = (
+                f"새 버전이 있습니다 — {st.behind}개 커밋 뒤처짐. "
+                "'업데이트'를 누르면 받아서 자동 재시작합니다."
+            )
+            update_banner.set_visibility(True)
+
+    async def do_update():
+        update_btn.props("loading")
+        update_btn.disable()
+        ok, msg = await run.io_bound(engine.apply_update)
+        if not ok:
+            update_btn.props(remove="loading")
+            update_btn.enable()
+            ui.notify(f"업데이트 실패: {msg}", type="negative")
+            return
+        ui.notify("업데이트 적용됨 — 재시작합니다…", type="positive")
+        ui.timer(1.2, _restart, once=True)  # notify 가 렌더된 뒤 재시작
+
     scan_btn.on_click(do_scan)
     trash_sel_btn.on_click(do_trash_selected)
     refresh_btn.on_click(lambda: (update_stats(), render_groups()))
+    update_btn.on_click(do_update)
     ui.timer(0.3, tick_progress)
+    ui.timer(0.5, check_for_update, once=True)  # 로드 직후 1회 업데이트 체크
 
     # 최초 표시
     update_stats()
     update_sel()
     render_groups()
+
+
+def _restart():
+    """현재 프로세스를 같은 인자로 재실행(업데이트 적용 후 새 코드 로드)."""
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 def _free_port(preferred: int = 8713) -> int:
