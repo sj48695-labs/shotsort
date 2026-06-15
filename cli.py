@@ -47,12 +47,14 @@ def cmd_scan(args):
         mark = "  🗑 삭제후보" if tag["deletable"] else ""
         print(f"  [{i}/{total}] {path.name} → {tag['project']} ({tag['kind']}){mark}")
 
+    hints = [h for h in (args.projects or "").split(",") if h.strip()]
     res = engine.scan_images(
         root,
         use_llm=use_llm,
         model=args.model,
         with_image=args.with_image,
         force=args.force,
+        project_hints=hints,
         on_item=on_item,
     )
 
@@ -112,6 +114,25 @@ def cmd_open(args):
     print(f"{len(paths)}개 중 첫 파일을 Finder 에 표시했습니다.")
 
 
+def cmd_move(args):
+    dest_root = Path(args.to).expanduser() if args.to else engine.default_export_root(DEFAULT_SCAN_DIR)
+    paths = engine.collect_paths(args.group, args.deletable)
+    if not paths:
+        print("대상이 없습니다. (--group 이름 또는 --deletable 지정)")
+        return
+    n, folder = engine.move_group(args.group, dest_root, deletable=args.deletable)
+    print(f"{n}개를 {folder} 로 이동했습니다.")
+
+
+def cmd_zip(args):
+    paths = engine.collect_paths(args.group, args.deletable)
+    if not paths:
+        print("대상이 없습니다. (--group 이름 또는 --deletable 지정)")
+        return
+    n, out = engine.zip_group(args.group, args.out, deletable=args.deletable)
+    print(f"{n}개를 압축했습니다: {out}")
+
+
 def cmd_stats(args):
     s = engine.stats()
     if not s.total:
@@ -133,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--with-image", action="store_true", help="OCR 텍스트와 함께 축소 썸네일도 Claude 에 전달(정확도↑ 비용↑)")
     sp.add_argument("--local", action="store_true", help="API 키가 있어도 로컬 휴리스틱 모드 강제(무료/오프라인)")
     sp.add_argument("--force", action="store_true", help="캐시 무시하고 전부 재분석")
+    sp.add_argument("--projects", help="알려진 프로젝트명(쉼표 구분). OCR 에 이 단어가 있으면 해당 프로젝트로 묶음. 예: act-server,hitc,zipath")
     sp.set_defaults(func=cmd_scan)
 
     gp = sub.add_parser("groups", help="프로젝트별 그룹 보기")
@@ -149,6 +171,18 @@ def build_parser() -> argparse.ArgumentParser:
     op.add_argument("--group", help="그룹명")
     op.add_argument("--deletable", action="store_true")
     op.set_defaults(func=cmd_open)
+
+    mp = sub.add_parser("move", help="그룹/삭제후보를 폴더로 이동(<대상>/<그룹명>/)")
+    mp.add_argument("--group", help="그룹명")
+    mp.add_argument("--deletable", action="store_true", help="삭제 후보 전체")
+    mp.add_argument("--to", help="대상 루트 폴더 (기본: <스캔 디렉토리>/_shotsort)")
+    mp.set_defaults(func=cmd_move)
+
+    zp = sub.add_parser("zip", help="그룹/삭제후보를 zip 으로 압축(원본 유지)")
+    zp.add_argument("--group", help="그룹명")
+    zp.add_argument("--deletable", action="store_true", help="삭제 후보 전체")
+    zp.add_argument("--out", help="출력 zip 경로 (기본: <스캔 디렉토리>/_shotsort/<그룹명>.zip)")
+    zp.set_defaults(func=cmd_zip)
 
     stp = sub.add_parser("stats", help="통계")
     stp.set_defaults(func=cmd_stats)
