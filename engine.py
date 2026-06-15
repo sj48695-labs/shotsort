@@ -495,6 +495,7 @@ def scan_images(
     with_image: bool = False,
     force: bool = False,
     consolidate: bool = True,
+    project_hints: list[str] | None = None,
     on_item: ItemCallback | None = None,
 ) -> ScanResult:
     """이미지를 분석해 DB 에 저장하고(캐시되지 않은 것만), 2차 그룹 정규화까지 수행."""
@@ -546,13 +547,18 @@ def scan_images(
 
     if consolidate:
         try:
-            consolidate_all(conn=conn, use_llm=use_llm)
+            consolidate_all(conn=conn, use_llm=use_llm, project_hints=project_hints)
         except Exception as e:
             res.consolidate_error = str(e)
     return res
 
 
-def consolidate_all(conn: sqlite3.Connection | None = None, *, use_llm: bool) -> int:
+def consolidate_all(
+    conn: sqlite3.Connection | None = None,
+    *,
+    use_llm: bool,
+    project_hints: list[str] | None = None,
+) -> int:
     """DB 전체를 대상으로 2차 그룹 정규화. 반환: 갱신된 행 수."""
     conn = conn or db()
     rows = conn.execute(
@@ -566,7 +572,42 @@ def consolidate_all(conn: sqlite3.Connection | None = None, *, use_llm: bool) ->
     for rid, grp in mapping.items():
         conn.execute("UPDATE images SET grp=? WHERE rowid=?", (grp, rid))
     conn.commit()
+    if project_hints:
+        apply_project_hints(project_hints, conn=conn)
     return len(mapping)
+
+
+def apply_project_hints(
+    hints: list[str], conn: sqlite3.Connection | None = None
+) -> int:
+    """알려진 프로젝트명 힌트로 그룹을 덮어쓴다(로컬·Claude 공통 후처리).
+
+    OCR 텍스트·1차 project·요약 어디든 힌트 단어가 (토큰 경계로) 나오면, 해당
+    이미지의 grp 를 그 힌트로 강제한다. 로컬 OCR 휴리스틱이 못 묶는 act-server·hitc
+    같은 프로젝트를 결정적으로 모아 준다. 반환: 재배치된 행 수.
+    """
+    cleaned = [h.strip() for h in hints if h and h.strip()]
+    if not cleaned:
+        return 0
+    # 긴 힌트 우선(겹칠 때 더 구체적인 이름으로). 토큰 경계 매칭(하이픈은 단어 일부로 취급).
+    patterns = [
+        (h, _re.compile(rf"(?<![\w-]){_re.escape(h)}(?![\w-])", _re.I))
+        for h in sorted(cleaned, key=len, reverse=True)
+    ]
+    conn = conn or db()
+    rows = conn.execute(
+        "SELECT rowid AS id, project, summary, ocr_text FROM images"
+    ).fetchall()
+    moved = 0
+    for r in rows:
+        blob = f"{r['project'] or ''}\n{r['summary'] or ''}\n{r['ocr_text'] or ''}"
+        for name, rx in patterns:
+            if rx.search(blob):
+                conn.execute("UPDATE images SET grp=? WHERE rowid=?", (name, r["id"]))
+                moved += 1
+                break
+    conn.commit()
+    return moved
 
 
 def list_groups(deletable: bool = False) -> "OrderedDict[str, list[dict]]":
