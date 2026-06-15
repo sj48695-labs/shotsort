@@ -17,9 +17,11 @@ import hashlib
 import json
 import os
 import re as _re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import zipfile
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -673,6 +675,140 @@ def trash(paths: list[str]) -> int:
     move_to_trash(paths)
     forget_paths(paths)
     return len(paths)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 그룹 정리 동작 — 폴더로 이동 / zip 압축 / Finder 에서 보기 (전부 비파괴적)
+# ─────────────────────────────────────────────────────────────────────────────
+def safe_dirname(name: str) -> str:
+    """그룹명을 폴더/파일명으로 안전하게. 경로 구분자·제어문자를 _ 로."""
+    s = _re.sub(r'[/\\:*?"<>|\x00-\x1f]', "_", (name or "").strip())
+    s = s.strip(". ") or "untitled"
+    return s[:80]
+
+
+def _unique_dest(dest_dir: Path, name: str) -> Path:
+    """대상 폴더에서 이름 충돌 시 ' (2)', ' (3)' … 를 붙여 비충돌 경로를 만든다."""
+    cand = dest_dir / name
+    if not cand.exists():
+        return cand
+    stem, suffix = Path(name).stem, Path(name).suffix
+    i = 2
+    while True:
+        cand = dest_dir / f"{stem} ({i}){suffix}"
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+def default_export_root(scan_root: Path | str) -> Path:
+    """기본 내보내기 루트: <스캔 디렉토리>/_shotsort. 스캔 대상이 파일이면 그 부모 기준."""
+    p = Path(scan_root).expanduser()
+    base = p if p.is_dir() else p.parent
+    return base / "_shotsort"
+
+
+def move_paths(paths: list[str], dest_dir: Path) -> int:
+    """파일들을 dest_dir 로 이동하고 DB 의 path 를 새 위치로 갱신. 반환: 이동 개수."""
+    dest_dir = Path(dest_dir).expanduser()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    conn = db()
+    moved = 0
+    for sp in paths:
+        src = Path(sp)
+        if not src.exists():
+            continue
+        target = _unique_dest(dest_dir, src.name)
+        if target.resolve() == src.resolve():
+            continue
+        shutil.move(str(src), str(target))
+        conn.execute("UPDATE images SET path=? WHERE path=?", (str(target), sp))
+        moved += 1
+    conn.commit()
+    return moved
+
+
+def move_group(
+    group: str | None, dest_root: Path | str, *, deletable: bool = False
+) -> tuple[int, Path]:
+    """그룹(또는 삭제후보) 멤버를 dest_root/<그룹명>/ 으로 이동. 반환: (개수, 대상 폴더)."""
+    paths = collect_paths(group, deletable)
+    folder = "정리(삭제후보)" if deletable else (group or "untitled")
+    dest_dir = Path(dest_root).expanduser() / safe_dirname(folder)
+    n = move_paths(paths, dest_dir)
+    return n, dest_dir
+
+
+def zip_group(
+    group: str | None, out_path: Path | str | None = None, *, deletable: bool = False
+) -> tuple[int, Path]:
+    """그룹 멤버를 zip 으로 압축(원본 유지). 반환: (압축한 개수, zip 경로)."""
+    paths = collect_paths(group, deletable)
+    name = "정리(삭제후보)" if deletable else (group or "untitled")
+    if out_path is None:
+        out_path = default_export_root(Path(paths[0]).parent if paths else HOME) / f"{safe_dirname(name)}.zip"
+    out_path = Path(out_path).expanduser()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path = _unique_dest(out_path.parent, out_path.name)
+    written = 0
+    used: set[str] = set()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for sp in paths:
+            src = Path(sp)
+            if not src.exists():
+                continue
+            arc = src.name
+            i = 2
+            while arc in used:  # 다른 폴더의 동명 파일 충돌 방지
+                arc = f"{src.stem} ({i}){src.suffix}"
+                i += 1
+            used.add(arc)
+            zf.write(src, arc)
+            written += 1
+    return written, out_path
+
+
+def rename_group(old: str, new: str) -> int:
+    """그룹 이름 변경. 해당 그룹의 모든 이미지 grp 를 new 로 설정. 반환: 변경된 행 수.
+
+    list_groups 는 `COALESCE(grp, project)` 로 그룹키를 만들므로, grp 가 비어 있어
+    project 가 그룹명이던 경우도 grp=new 로 채워 새 이름으로 묶인다.
+    이름을 바꿔 두면 '폴더로 이동'·'정리' 시 그 이름으로 폴더가 생성된다.
+    """
+    new = (new or "").strip()
+    if not new or new == old:
+        return 0
+    conn = db()
+    cur = conn.execute(
+        "UPDATE images SET grp=? WHERE COALESCE(grp, project)=?", (new, old)
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def move_images_to_group(paths: list[str], group: str) -> int:
+    """이미지 여러 개를 다른 그룹으로 재배치(grp 변경). 드래그 앤 드롭 수동 재분류용.
+
+    선택한 카드들을 한꺼번에 끌어다 놓을 때 쓴다. 반환: 재배치된 행 수.
+    """
+    group = (group or "").strip()
+    if not group or not paths:
+        return 0
+    conn = db()
+    conn.executemany(
+        "UPDATE images SET grp=? WHERE path=?", [(group, p) for p in paths]
+    )
+    conn.commit()
+    return len(paths)
+
+
+def reveal_in_finder(path: str | Path) -> None:
+    """Finder 에서 해당 파일을 선택해 보여 준다(open -R)."""
+    p = Path(path)
+    if not p.exists():
+        raise RuntimeError(f"파일 없음: {p}")
+    subprocess.run(["open", "-R", str(p)], check=True)
 
 
 @dataclass
