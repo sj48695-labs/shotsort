@@ -4,3 +4,7 @@ __pycache__/
 .DS_Store
 *.db
 .playwright-cli/
+# 빌드 산출물 (PyInstaller / .app / .dmg) — 릴리스로 배포, 커밋 X
+build/
+dist/
+*.spec

@@ -659,9 +659,12 @@ def repo_dir() -> Path:
 
 
 def _git(*args: str) -> tuple[int, str]:
-    r = subprocess.run(
-        ["git", "-C", str(repo_dir()), *args], capture_output=True, text=True
-    )
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo_dir()), *args], capture_output=True, text=True
+        )
+    except (FileNotFoundError, OSError) as e:
+        return 1, str(e)  # git 미설치(.app 번들 등) → 호출부가 error 로 처리
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
