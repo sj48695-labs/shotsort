@@ -24,6 +24,10 @@ import engine
 def index():
     # 현재 렌더된 카드의 체크박스 핸들 (경로 → checkbox) = 선택 상태의 단일 출처.
     checks: dict[str, "ui.checkbox"] = {}
+    # Shift+클릭 범위 선택용: 렌더 순서(그룹별)와 마지막으로 클릭한 앵커.
+    group_order: dict[str, list[str]] = {}  # 그룹명 → 그 그룹의 경로 순서
+    path_group: dict[str, str] = {}         # 경로 → 그룹명
+    anchor: dict[str, str | None] = {"path": None}
     # 드래그 중인 이미지 경로 목록(카드 → 다른 그룹으로 끌어 재분류). 서버측 단일 출처.
     # 선택(체크)된 카드를 끌면 선택 전체, 아니면 그 카드 하나만 담긴다.
     dragging: dict[str, list[str]] = {"paths": []}
@@ -104,6 +108,9 @@ def index():
 
     def render_groups():
         checks.clear()
+        group_order.clear()
+        path_group.clear()
+        anchor["path"] = None
         update_sel()
         groups = engine.list_groups()
         groups_box.clear()
@@ -124,6 +131,9 @@ def index():
                 exp.on("drop", lambda _, name=g: on_drop_to(name))
                 with exp:
                     paths = [it["path"] for it in items]
+                    group_order[g] = paths
+                    for p in paths:
+                        path_group[p] = g
                     with ui.row().classes("gap-2 mb-2 items-center"):
                         ui.button(
                             "이 그룹 전체선택",
@@ -175,6 +185,29 @@ def index():
                 checks[p].value = on
         update_sel()
 
+    def _on_check_click(e, p: str):
+        """체크박스 클릭 — Shift+클릭이면 같은 그룹 내 앵커~현재까지 범위 선택.
+
+        클릭 시점엔 이미 체크박스가 토글된 뒤라 checks[p].value 가 목표 상태다.
+        그 상태를 앵커~현재 구간 전체에 적용한다(파일 탐색기식 범위 선택).
+        """
+        shift = e.args.get("shiftKey") if isinstance(e.args, dict) else bool(e.args)
+        a = anchor["path"]
+        if shift and a and a != p and path_group.get(a) == path_group.get(p):
+            order = group_order.get(path_group[p], [])
+            try:
+                i, j = order.index(a), order.index(p)
+            except ValueError:
+                i = j = -1
+            if i >= 0 and j >= 0:
+                lo, hi = (i, j) if i <= j else (j, i)
+                target = checks[p].value
+                for q in order[lo : hi + 1]:
+                    if q in checks:
+                        checks[q].value = target
+                update_sel()
+        anchor["path"] = p
+
     def _thumb_card(it: dict):
         path = it["path"]
         card = ui.card().classes("p-1 cursor-move").style("width:180px")
@@ -196,11 +229,14 @@ def index():
             ).tooltip(Path(path).name).on("click", lambda _, it=it: open_preview(it))
             if it["summary"]:
                 ui.label(it["summary"]).classes("text-xs text-gray-500 truncate w-full")
-            checks[path] = ui.checkbox(
+            cb = ui.checkbox(
                 "삭제 선택" + ("  🗑" if it["deletable"] else ""),
                 value=False,
                 on_change=lambda e: update_sel(),
             ).classes("text-xs")
+            cb.tooltip("Shift+클릭: 같은 그룹 범위 선택")
+            cb.on("click", lambda e, p=path: _on_check_click(e, p), args=["shiftKey"])
+            checks[path] = cb
 
     # ── 액션 ────────────────────────────────────────────────────────────────
     async def do_scan():
