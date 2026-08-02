@@ -221,11 +221,54 @@ class DuplicateGroup:
     """비파괴 중복 탐지 결과.
 
     ``kind``는 전체 SHA-256으로 검증한 ``"exact"`` 또는 perceptual hash로
-    검증한 ``"near"``다. 구성원은 경로 기준으로 안정적으로 정렬된다.
+    검증한 ``"near"``다. ``members``는 경로 기준으로 안정적으로 정렬된
+    :class:`ImageFingerprint`이며, ``keeper``는 보존할 구성원이다. 탐지 API가
+    반환한 모든 그룹에는 keeper가 있고, 나머지는 ``duplicate_candidates``로
+    접근할 수 있다.
+
+    ``keeper``의 기본값은 기존의 ``DuplicateGroup(kind, members)`` 생성자를
+    사용하는 호출자와의 호환성을 위한 것이다.
     """
 
     kind: str
     members: tuple[ImageFingerprint, ...]
+    keeper: ImageFingerprint | None = None
+
+    @property
+    def duplicate_candidates(self) -> tuple[ImageFingerprint, ...]:
+        """보존 후보를 제외한, 비파괴 탐지 결과의 중복 후보를 반환한다."""
+        return tuple(member for member in self.members if member != self.keeper)
+
+
+def _image_pixel_area(path: Path) -> int:
+    """이미지의 저장된 픽셀 면적을 반환하고 읽을 수 없으면 0을 반환한다."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+        return width * height
+    except Exception:
+        return 0
+
+
+def _keeper_sort_key(fingerprint: ImageFingerprint) -> tuple[int, int, str]:
+    """보존 후보 우선순위 키: 큰 면적, 큰 파일, 경로 사전순.
+
+    이 함수는 파일이나 DB를 변경하지 않으므로 duplicate group 결과를 결정하는
+    순수한 읽기 전용 정렬 키로 사용할 수 있다.
+    """
+    try:
+        file_size = fingerprint.path.stat().st_size
+    except OSError:
+        file_size = 0
+    return (-_image_pixel_area(fingerprint.path), -file_size, str(fingerprint.path))
+
+
+def _with_keeper(kind: str, members: list[ImageFingerprint]) -> DuplicateGroup:
+    """정렬된 중복 구성원으로 결정적인 보존 후보를 포함한 그룹을 만든다."""
+    ordered_members = tuple(members)
+    return DuplicateGroup(kind, ordered_members, min(ordered_members, key=_keeper_sort_key))
 
 
 def _compute_image_fingerprint(path: Path) -> ImageFingerprint:
@@ -308,6 +351,8 @@ def find_duplicate_groups(
     정상적으로 perceptual hash를 계산하지 못한 파일과 이미지 확장자가 아닌 입력은
     안전하게 제외한다. Exact 그룹을 먼저 만들고, 나머지는 경로순 greedy
     complete-link로 묶는다. 따라서 near 그룹의 모든 두 구성원은 임계값 이내다.
+    반환 그룹은 모두 하나의 ``keeper``와 그 외 ``duplicate_candidates``를
+    포함하며, 이 함수는 파일 이동·삭제나 OCR을 수행하지 않는다.
     """
     if hamming_threshold < 0:
         raise ValueError("hamming_threshold must be non-negative")
@@ -330,11 +375,7 @@ def find_duplicate_groups(
     for fingerprint in fingerprints:
         by_sha.setdefault(fingerprint.sha256, []).append(fingerprint)
 
-    exact_groups = [
-        DuplicateGroup("exact", tuple(members))
-        for _, members in sorted(by_sha.items())
-        if len(members) > 1
-    ]
+    exact_groups = [_with_keeper("exact", members) for _, members in sorted(by_sha.items()) if len(members) > 1]
     exact_paths = {member.path for group in exact_groups for member in group.members}
     near_candidates = [fingerprint for fingerprint in fingerprints if fingerprint.path not in exact_paths]
 
@@ -348,11 +389,7 @@ def find_duplicate_groups(
         else:
             near_clusters.append([candidate])
 
-    near_groups = [
-        DuplicateGroup("near", tuple(cluster))
-        for cluster in near_clusters
-        if len(cluster) > 1
-    ]
+    near_groups = [_with_keeper("near", cluster) for cluster in near_clusters if len(cluster) > 1]
     return exact_groups + near_groups
 
 

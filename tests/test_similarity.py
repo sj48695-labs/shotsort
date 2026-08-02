@@ -138,6 +138,55 @@ class SimilarityFingerprintTests(unittest.TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[middle]))
 
+    def test_keeper_prefers_larger_pixel_area(self):
+        small = self.root / "small.png"
+        large = self.root / "large.png"
+        Image.new("RGB", (20, 20), "red").save(small)
+        Image.new("RGB", (30, 30), "red").save(large)
+        fingerprints = {
+            small: engine.ImageFingerprint(small, "same-sha", "0000000000000000"),
+            large: engine.ImageFingerprint(large, "same-sha", "ffffffffffffffff"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            group = engine.find_duplicate_groups([small, large], conn=self.conn)[0]
+
+        self.assertEqual(group.keeper, fingerprints[large])
+        self.assertEqual(group.duplicate_candidates, (fingerprints[small],))
+
+    def test_keeper_breaks_same_area_tie_by_larger_file_size(self):
+        smaller = self.root / "smaller.png"
+        larger = self.root / "larger.png"
+        Image.new("RGB", (24, 24), "red").save(smaller, optimize=True)
+        Image.new("RGB", (24, 24), "red").save(larger)
+        larger.write_bytes(larger.read_bytes() + b"padding")
+        fingerprints = {
+            smaller: engine.ImageFingerprint(smaller, "same-sha", "0000000000000000"),
+            larger: engine.ImageFingerprint(larger, "same-sha", "ffffffffffffffff"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            group = engine.find_duplicate_groups([smaller, larger], conn=self.conn)[0]
+
+        self.assertGreater(larger.stat().st_size, smaller.stat().st_size)
+        self.assertEqual(group.keeper, fingerprints[larger])
+
+    def test_keeper_breaks_complete_tie_by_lexicographic_path(self):
+        later = self.root / "z.png"
+        earlier = self.root / "a.png"
+        for path in (later, earlier):
+            Image.new("RGB", (24, 24), "red").save(path)
+        fingerprints = {
+            later: engine.ImageFingerprint(later, "same-sha", "0000000000000000"),
+            earlier: engine.ImageFingerprint(earlier, "same-sha", "ffffffffffffffff"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            group = engine.find_duplicate_groups([later, earlier], conn=self.conn)[0]
+
+        self.assertEqual(group.keeper, fingerprints[earlier])
+        self.assertEqual(group.duplicate_candidates, (fingerprints[later],))
+
     def test_broken_and_non_image_inputs_are_safely_excluded(self):
         valid = self.root / "valid.png"
         broken = self.root / "broken.png"

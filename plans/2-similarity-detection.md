@@ -42,7 +42,7 @@
 
 완료 기준: 결과는 같은 입력에서 안정적이고, exact가 near보다 우선하며, transitive near-match가 검증 없이 한 그룹으로 이어지지 않는다.
 
-## Phase 3 — 보존 후보 선택과 호출자 친화 결과 계약
+## Phase 3 (완료) — 보존 후보 선택과 호출자 친화 결과 계약
 
 변경 파일: `engine.py`, `tests/test_similarity.py`, `README.md`
 
