@@ -2,7 +2,7 @@
 
 PLATFORM=github
 
-AI_PROVIDER=claude
+AI_PROVIDER=codex
 
 MODEL_PM=opus
 MODEL_IMPL=sonnet
@@ -20,3 +20,5 @@ LABEL_TASK=task
 LABEL_PHASE=phase
 
 # 추가 설정은 템플릿 참고: /Users/sujeong/personal/github/sj48695-labs/devloop-hub/scripts/devloop.example
+
+AUTO_MERGE=on
