@@ -1,4 +1,4 @@
-"""Similarity fingerprint cache tests."""
+"""유사 이미지 지문 캐시 테스트."""
 from __future__ import annotations
 
 import hashlib
@@ -65,7 +65,7 @@ class SimilarityFingerprintTests(unittest.TestCase):
                 image.putpixel((x, y), (0, 0, 0))
         image.save(upright, quality=100, subsampling=0)
 
-        # The stored pixels are rotated clockwise; EXIF 6 restores the upright image.
+        # 저장된 픽셀은 시계 방향으로 회전했고, EXIF 6이 세로 방향으로 복원한다.
         exif = Image.Exif()
         exif[274] = 6
         image.transpose(Image.Transpose.ROTATE_90).save(
