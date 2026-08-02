@@ -13,7 +13,7 @@
 - API는 경로 목록(또는 스캔 루트에서 얻은 이미지)을 입력으로 받아, 검증을 통과한 중복 그룹과 그룹별 보존 후보를 반환한다.
 - 정확 중복은 전체 SHA-256 일치가 우선이며, perceptual hash는 이미지가 정상적으로 열리는 경우에만 근접 중복 후보를 만든다.
 
-## Phase 1 — 지문 계산과 SQLite 버전 캐시 기반 마련
+## Phase 1 (완료) — 지문 계산과 SQLite 버전 캐시 기반 마련
 
 변경 파일: `engine.py`, `requirements.txt`, `tests/test_similarity.py`
 

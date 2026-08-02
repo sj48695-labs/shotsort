@@ -6,6 +6,7 @@ pyobjc-framework-Vision; sys_platform == "darwin"
 pyobjc-framework-Quartz; sys_platform == "darwin"
 # --with-image 썸네일 전달용 + 앱 썸네일 생성
 Pillow
+ImageHash
 # 데스크탑 앱 UI (app.py). native 창은 pywebview 사용
 nicegui
 pywebview; sys_platform == "darwin"

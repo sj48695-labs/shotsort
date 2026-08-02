@@ -43,13 +43,21 @@ CONSOLIDATE_MODEL = "claude-opus-4-8"
 VERSION = "0.1.1"
 REPO_SLUG = "sj48695-labs/shotsort"
 
+# 이미지 디코딩·정규화·해시 방식이 바뀌면 캐시를 안전하게 무효화한다.
+FINGERPRINT_ALGORITHM_VERSION = 1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB
 # ─────────────────────────────────────────────────────────────────────────────
-def db() -> sqlite3.Connection:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
+    """OCR 캐시와 별도 지문 캐시 스키마를 준비한 연결을 반환한다.
+
+    테스트나 호출자는 임시 SQLite 연결을 넘길 수 있어 사용자 캐시를 건드리지 않는다.
+    """
+    if conn is None:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute(
         """
@@ -87,6 +95,18 @@ def db() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE saved_projects ADD COLUMN characteristics TEXT NOT NULL DEFAULT ''"
         )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fingerprint_cache (
+            path              TEXT PRIMARY KEY,
+            mtime             INTEGER NOT NULL,
+            size              INTEGER NOT NULL,
+            algorithm_version INTEGER NOT NULL,
+            sha256            TEXT NOT NULL,
+            phash             TEXT
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -178,12 +198,81 @@ def set_project_enabled(name: str, enabled: bool) -> int:
     return cur.rowcount
 
 
-def file_sha(path: Path, limit: int = 2_000_000) -> str:
+def file_sha(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """파일 전체의 SHA-256을 고정 크기 청크로 계산한다."""
     h = hashlib.sha256()
     with path.open("rb") as f:
-        h.update(f.read(limit))
-    h.update(str(path.stat().st_size).encode())
+        while chunk := f.read(chunk_size):
+            h.update(chunk)
     return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class ImageFingerprint:
+    """유사 이미지 탐지용, OCR과 독립된 파일 지문."""
+
+    path: Path
+    sha256: str
+    phash: str | None
+
+
+def _compute_image_fingerprint(path: Path) -> ImageFingerprint:
+    """파일 SHA와 EXIF 방향 보정 perceptual hash를 새로 계산한다.
+
+    손상 파일 등 Pillow 디코드 실패는 perceptual hash만 비워 두므로, 다른 파일의
+    지문 수집을 중단시키지 않는다.
+    """
+    sha256 = file_sha(path)
+    phash: str | None = None
+    try:
+        from PIL import Image, ImageOps
+        import imagehash
+
+        with Image.open(path) as image:
+            normalized = ImageOps.exif_transpose(image)
+            phash = str(imagehash.phash(normalized))
+    except Exception:
+        pass
+    return ImageFingerprint(path=path, sha256=sha256, phash=phash)
+
+
+def image_fingerprint(path: str | Path, *, conn: sqlite3.Connection | None = None) -> ImageFingerprint:
+    """파일 지문을 반환하고, 동일한 메타데이터·알고리즘 버전에서는 캐시를 쓴다."""
+    image_path = Path(path)
+    st = image_path.stat()
+    conn = db(conn)
+    cache_key = str(image_path)
+    row = conn.execute(
+        "SELECT mtime, size, algorithm_version, sha256, phash FROM fingerprint_cache WHERE path=?",
+        (cache_key,),
+    ).fetchone()
+    if (
+        row
+        and row["mtime"] == st.st_mtime_ns
+        and row["size"] == st.st_size
+        and row["algorithm_version"] == FINGERPRINT_ALGORITHM_VERSION
+    ):
+        return ImageFingerprint(image_path, row["sha256"], row["phash"])
+
+    fingerprint = _compute_image_fingerprint(image_path)
+    conn.execute(
+        """INSERT INTO fingerprint_cache(path,mtime,size,algorithm_version,sha256,phash)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(path) DO UPDATE SET
+             mtime=excluded.mtime, size=excluded.size,
+             algorithm_version=excluded.algorithm_version, sha256=excluded.sha256,
+             phash=excluded.phash""",
+        (
+            cache_key,
+            st.st_mtime_ns,
+            st.st_size,
+            FINGERPRINT_ALGORITHM_VERSION,
+            fingerprint.sha256,
+            fingerprint.phash,
+        ),
+    )
+    conn.commit()
+    return fingerprint
 
 
 # ─────────────────────────────────────────────────────────────────────────────
