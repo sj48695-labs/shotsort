@@ -62,13 +62,15 @@ class SimilarityFingerprintTests(unittest.TestCase):
         image = Image.new("RGB", (20, 40), "white")
         for y in range(20):
             for x in range(8):
-                image.putpixel((x, y), "black")
-        image.save(upright)
+                image.putpixel((x, y), (0, 0, 0))
+        image.save(upright, quality=100, subsampling=0)
 
         # The stored pixels are rotated clockwise; EXIF 6 restores the upright image.
         exif = Image.Exif()
         exif[274] = 6
-        image.transpose(Image.Transpose.ROTATE_90).save(rotated_with_exif, exif=exif)
+        image.transpose(Image.Transpose.ROTATE_90).save(
+            rotated_with_exif, exif=exif, quality=100, subsampling=0
+        )
 
         self.assertEqual(
             engine.image_fingerprint(upright, conn=self.conn).phash,
@@ -83,6 +85,71 @@ class SimilarityFingerprintTests(unittest.TestCase):
 
         self.assertEqual(fingerprint.sha256, hashlib.sha256(b"not an image").hexdigest())
         self.assertIsNone(fingerprint.phash)
+
+    def test_exact_duplicates_take_priority_over_perceptual_hash(self):
+        first = self.root / "first.png"
+        second = self.root / "second.png"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        fingerprints = {
+            first: engine.ImageFingerprint(first, "same-sha", "0000000000000000"),
+            second: engine.ImageFingerprint(second, "same-sha", "ffffffffffffffff"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            groups = engine.find_duplicate_groups([second, first], conn=self.conn)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].kind, "exact")
+        self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[second]))
+
+    def test_near_duplicates_are_grouped_within_hamming_threshold(self):
+        first = self.root / "first.png"
+        second = self.root / "second.png"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        fingerprints = {
+            first: engine.ImageFingerprint(first, "first", "0000000000000000"),
+            second: engine.ImageFingerprint(second, "second", "0000000000000003"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            groups = engine.find_duplicate_groups([second, first], hamming_threshold=2, conn=self.conn)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].kind, "near")
+        self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[second]))
+
+    def test_near_duplicate_chain_requires_complete_link(self):
+        first = self.root / "a.png"
+        middle = self.root / "b.png"
+        last = self.root / "c.png"
+        for path in (first, middle, last):
+            path.write_bytes(path.name.encode())
+        fingerprints = {
+            first: engine.ImageFingerprint(first, "a", "0000000000000000"),
+            middle: engine.ImageFingerprint(middle, "b", "0000000000000001"),
+            last: engine.ImageFingerprint(last, "c", "0000000000000003"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            groups = engine.find_duplicate_groups([last, middle, first], hamming_threshold=1, conn=self.conn)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[middle]))
+
+    def test_broken_and_non_image_inputs_are_safely_excluded(self):
+        valid = self.root / "valid.png"
+        broken = self.root / "broken.png"
+        text = self.root / "notes.txt"
+        Image.new("RGB", (24, 16), "red").save(valid)
+        broken.write_bytes(b"not an image")
+        text.write_text("not an image")
+
+        self.assertEqual(
+            engine.find_duplicate_groups([valid, broken, text, self.root / "missing.png"], conn=self.conn),
+            [],
+        )
 
 
 if __name__ == "__main__":

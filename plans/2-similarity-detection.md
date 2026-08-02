@@ -28,7 +28,7 @@
 
 완료 기준: 해시 계산은 파일 전체를 스트리밍하며, 동일 메타데이터+버전에는 재계산하지 않고, 테스트가 실제 사용자 `~/.shotsort/cache.db`를 사용하지 않는다.
 
-## Phase 2 — 독립적인 exact/near 탐지와 complete-link 검증
+## Phase 2 (완료) — 독립적인 exact/near 탐지와 complete-link 검증
 
 변경 파일: `engine.py`, `tests/test_similarity.py`
 

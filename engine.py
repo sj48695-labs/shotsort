@@ -216,6 +216,18 @@ class ImageFingerprint:
     phash: str | None
 
 
+@dataclass(frozen=True)
+class DuplicateGroup:
+    """비파괴 중복 탐지 결과.
+
+    ``kind``는 전체 SHA-256으로 검증한 ``"exact"`` 또는 perceptual hash로
+    검증한 ``"near"``다. 구성원은 경로 기준으로 안정적으로 정렬된다.
+    """
+
+    kind: str
+    members: tuple[ImageFingerprint, ...]
+
+
 def _compute_image_fingerprint(path: Path) -> ImageFingerprint:
     """파일 SHA와 EXIF 방향 보정 perceptual hash를 새로 계산한다.
 
@@ -273,6 +285,75 @@ def image_fingerprint(path: str | Path, *, conn: sqlite3.Connection | None = Non
     )
     conn.commit()
     return fingerprint
+
+
+def _phash_distance(first: str, second: str) -> int | None:
+    """두 hexadecimal perceptual hash의 Hamming 거리를 안전하게 계산한다."""
+    try:
+        if len(first) != len(second):
+            return None
+        return (int(first, 16) ^ int(second, 16)).bit_count()
+    except ValueError:
+        return None
+
+
+def find_duplicate_groups(
+    paths: list[str | Path],
+    *,
+    hamming_threshold: int = 8,
+    conn: sqlite3.Connection | None = None,
+) -> list[DuplicateGroup]:
+    """OCR·분류 DB와 독립적으로 exact/near 이미지 중복 그룹을 찾는다.
+
+    정상적으로 perceptual hash를 계산하지 못한 파일과 이미지 확장자가 아닌 입력은
+    안전하게 제외한다. Exact 그룹을 먼저 만들고, 나머지는 경로순 greedy
+    complete-link로 묶는다. 따라서 near 그룹의 모든 두 구성원은 임계값 이내다.
+    """
+    if hamming_threshold < 0:
+        raise ValueError("hamming_threshold must be non-negative")
+
+    image_paths = sorted(
+        {Path(path) for path in paths if Path(path).suffix.lower() in IMAGE_EXTS},
+        key=lambda path: str(path),
+    )
+    fingerprints: list[ImageFingerprint] = []
+    for path in image_paths:
+        try:
+            fingerprint = image_fingerprint(path, conn=conn)
+        except OSError:
+            continue
+        # pHash가 없으면 Pillow가 파일을 이미지로 정상 디코드하지 못한 것이다.
+        if fingerprint.phash is not None:
+            fingerprints.append(fingerprint)
+
+    by_sha: dict[str, list[ImageFingerprint]] = {}
+    for fingerprint in fingerprints:
+        by_sha.setdefault(fingerprint.sha256, []).append(fingerprint)
+
+    exact_groups = [
+        DuplicateGroup("exact", tuple(members))
+        for _, members in sorted(by_sha.items())
+        if len(members) > 1
+    ]
+    exact_paths = {member.path for group in exact_groups for member in group.members}
+    near_candidates = [fingerprint for fingerprint in fingerprints if fingerprint.path not in exact_paths]
+
+    near_clusters: list[list[ImageFingerprint]] = []
+    for candidate in near_candidates:
+        for cluster in near_clusters:
+            distances = [_phash_distance(candidate.phash, member.phash) for member in cluster]
+            if all(distance is not None and distance <= hamming_threshold for distance in distances):
+                cluster.append(candidate)
+                break
+        else:
+            near_clusters.append([candidate])
+
+    near_groups = [
+        DuplicateGroup("near", tuple(cluster))
+        for cluster in near_clusters
+        if len(cluster) > 1
+    ]
+    return exact_groups + near_groups
 
 
 # ─────────────────────────────────────────────────────────────────────────────
