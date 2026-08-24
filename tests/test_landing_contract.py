@@ -44,6 +44,7 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn("id-token: write", workflow)
         self.assertIn("actions/configure-pages@v5", workflow)
         self.assertIn("enablement: true", workflow)
+        self.assertIn("secrets.PAGES_SETUP_TOKEN || github.token", workflow)
         self.assertIn("actions/upload-pages-artifact@v3", workflow)
         self.assertIn("path: docs/landing", workflow)
         self.assertIn("actions/deploy-pages@v4", workflow)
