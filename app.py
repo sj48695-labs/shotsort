@@ -19,6 +19,15 @@ from nicegui import run, ui
 
 import engine
 from lazy_groups import GroupPage
+from preview_layout import (
+    PREVIEW_CARD_CLASSES,
+    PREVIEW_HEADER_CLASSES,
+    PREVIEW_IMAGE_CLASSES,
+    PREVIEW_IMAGE_PROPS,
+    PREVIEW_IMAGE_WRAPPER_CLASSES,
+    PREVIEW_IMAGE_WRAPPER_STYLE,
+    PREVIEW_METADATA_CLASSES,
+)
 
 
 GROUP_PAGE_SIZE = 24
@@ -565,24 +574,25 @@ def index():
 
     def open_preview(it: dict):
         path = it["path"]
-        with ui.dialog().props("maximized") as dialog, ui.card().classes(
-            "w-full h-full items-center"
-        ):
-            with ui.row().classes("items-center w-full gap-2"):
+        with ui.dialog().props("maximized") as dialog, ui.card().classes(PREVIEW_CARD_CLASSES):
+            with ui.row().classes(PREVIEW_HEADER_CLASSES):
                 ui.label(Path(path).name).classes("font-bold text-lg")
                 ui.space()
                 ui.button("Finder 에서 보기", icon="folder_open",
                           on_click=lambda: _reveal(path)).props("flat")
                 ui.button(icon="close", on_click=dialog.close).props("flat round")
             uri = engine.thumbnail_uri(path, max_edge=2200)
-            if uri:
-                # 남는 공간을 꽉 채워 가능한 한 크게(원본 비율 유지).
-                ui.image(uri).classes("grow w-full").style("object-fit:contain;min-height:0")
-            meta = f"그룹: {it.get('grp') or it.get('project') or '-'}  ·  종류: {it.get('kind') or '-'}"
-            ui.label(meta).classes("text-sm text-gray-500")
-            if it.get("summary"):
-                ui.label(it["summary"]).classes("text-sm text-gray-500")
-            ui.label(path).classes("text-xs text-gray-400 break-all")
+            with ui.element("div").classes(PREVIEW_IMAGE_WRAPPER_CLASSES).style(
+                PREVIEW_IMAGE_WRAPPER_STYLE
+            ):
+                if uri:
+                    ui.image(uri).classes(PREVIEW_IMAGE_CLASSES).props(PREVIEW_IMAGE_PROPS)
+            with ui.column().classes(PREVIEW_METADATA_CLASSES):
+                meta = f"그룹: {it.get('grp') or it.get('project') or '-'}  ·  종류: {it.get('kind') or '-'}"
+                ui.label(meta).classes("text-sm text-gray-500")
+                if it.get("summary"):
+                    ui.label(it["summary"]).classes("text-sm text-gray-500")
+                ui.label(path).classes("text-xs text-gray-400 break-all")
         dialog.open()
 
     def _reveal(path: str):
