@@ -5,6 +5,7 @@
   shotsort scan ~/Desktop          # 분석 (캐시되지 않은 것만)
   shotsort groups                  # 프로젝트별 그룹 보기
   shotsort groups --deletable      # 삭제 후보만 보기
+  shotsort similarity ~/Desktop    # 중복·유사 이미지 검사
   shotsort trash --group "영수증"   # 그룹 통째로 휴지통(확인 후)
   shotsort trash --deletable       # 삭제 후보 전부 휴지통(확인 후)
   shotsort open --group "act-server"  # Finder 에서 그룹 파일 보기
@@ -106,6 +107,107 @@ def cmd_trash(args):
     print(f"{n}개를 휴지통으로 보냈습니다.")
 
 
+def _non_negative_int(value: str) -> int:
+    """argparse용 0 이상의 정수 변환기."""
+    try:
+        number = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("0 이상의 정수여야 합니다") from error
+    if number < 0:
+        raise argparse.ArgumentTypeError("0 이상의 정수여야 합니다")
+    return number
+
+
+def _render_similarity_groups(groups: list[engine.DuplicateGroup]) -> None:
+    """탐지 API가 정한 순서와 keeper·점수를 CLI에 그대로 표시한다."""
+    for group_number, group in enumerate(groups, start=1):
+        kind = "exact" if group.kind == "exact" else "유사"
+        print(f"\n■ [{group_number}] {kind} 이미지 ({len(group.members)}개)")
+        print(f"  보존 후보: {group.keeper.path}")
+        scores = {score.member: score for score in group.member_similarities}
+        for member_number, member in enumerate(group.members, start=1):
+            score = scores.get(member)
+            similarity = f"{score.similarity_percent:.2f}%" if score else "-"
+            try:
+                size = engine.human_mb(member.path.stat().st_size)
+            except OSError:
+                size = "크기 확인 불가"
+            keeper_mark = " (보존 후보)" if member == group.keeper else ""
+            print(f"  {member_number}. {similarity:>7}  {size:>10}  {member.path}{keeper_mark}")
+
+
+def _selected_similarity_paths(groups: list[engine.DuplicateGroup], selections: list[str]) -> list[str] | None:
+    """명시한 ``GROUP:NUMBER``만 비-keeper 경로로 바꾼다.
+
+    잘못된 선택 하나라도 있으면 부분 삭제하지 않아 사용자가 출력 번호를 다시
+    확인하도록 한다.
+    """
+    paths: list[str] = []
+    seen: set[tuple[int, int]] = set()
+    for selection in selections:
+        try:
+            group_text, member_text = selection.split(":", 1)
+            group_number, member_number = int(group_text), int(member_text)
+        except ValueError:
+            print(f"잘못된 삭제 선택: {selection!r} (GROUP:NUMBER 형식)", file=sys.stderr)
+            return None
+        if group_number < 1 or member_number < 1 or group_number > len(groups):
+            print(f"존재하지 않는 삭제 선택: {selection}", file=sys.stderr)
+            return None
+        group = groups[group_number - 1]
+        if member_number > len(group.members):
+            print(f"존재하지 않는 삭제 선택: {selection}", file=sys.stderr)
+            return None
+        key = (group_number, member_number)
+        member = group.members[member_number - 1]
+        if key in seen:
+            print(f"중복된 삭제 선택: {selection}", file=sys.stderr)
+            return None
+        if member == group.keeper:
+            print(f"보존 후보는 삭제할 수 없습니다: {selection}", file=sys.stderr)
+            return None
+        seen.add(key)
+        paths.append(str(member.path))
+    return paths
+
+
+def cmd_similarity(args):
+    root = Path(args.path).expanduser()
+    if not root.exists():
+        sys.exit(f"경로 없음: {root}")
+
+    groups_result = engine.find_duplicate_groups(
+        engine.find_images(root), hamming_threshold=args.threshold
+    )
+    groups = list(groups_result)
+    if groups:
+        _render_similarity_groups(groups)
+    else:
+        print("중복·유사 이미지를 찾지 못했습니다.")
+    for error in groups_result.errors:
+        print(f"검사 실패: {error.path}: {error.message}", file=sys.stderr)
+
+    if not args.delete:
+        return
+    paths = _selected_similarity_paths(groups, args.delete)
+    if not paths:
+        return
+    print(f"\n휴지통으로 보낼 파일 {len(paths)}개:")
+    for path in paths:
+        print(f"  {path}")
+    if not args.yes:
+        answer = input(f"\n{len(paths)}개를 휴지통으로 보낼까요? (복구 가능) [y/N] ").strip().lower()
+        if answer != "y":
+            print("취소됨.")
+            return
+    try:
+        count = engine.trash(paths)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        return
+    print(f"{count}개를 휴지통으로 보냈습니다.")
+
+
 def cmd_open(args):
     paths = engine.collect_paths(args.group, args.deletable)
     if not paths:
@@ -205,6 +307,15 @@ def build_parser() -> argparse.ArgumentParser:
     tp.add_argument("--deletable", action="store_true", help="삭제 후보 전체")
     tp.add_argument("-y", "--yes", action="store_true", help="확인 없이 실행")
     tp.set_defaults(func=cmd_trash)
+
+    sip = sub.add_parser("similarity", help="중복·유사 이미지를 검사하고 명시 선택만 휴지통으로")
+    sip.add_argument("path", nargs="?", default=str(DEFAULT_SCAN_DIR), help=f"검사 경로 (기본 {DEFAULT_SCAN_DIR})")
+    sip.add_argument("--threshold", type=_non_negative_int, default=8,
+                     help="pHash Hamming 거리 임계값 (기본: 8, 낮을수록 엄격)")
+    sip.add_argument("--delete", action="append", default=[], metavar="GROUP:NUMBER",
+                     help="출력 그룹과 구성원 번호를 명시해 삭제 (반복 가능, 보존 후보 제외)")
+    sip.add_argument("-y", "--yes", action="store_true", help="삭제 확인 없이 실행")
+    sip.set_defaults(func=cmd_similarity)
 
     op = sub.add_parser("open", help="그룹 파일을 Finder 에 표시")
     op.add_argument("--group", help="그룹명")
