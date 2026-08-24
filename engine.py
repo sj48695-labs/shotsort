@@ -43,13 +43,21 @@ CONSOLIDATE_MODEL = "claude-opus-4-8"
 VERSION = "0.1.1"
 REPO_SLUG = "sj48695-labs/shotsort"
 
+# 이미지 디코딩·정규화·해시 방식이 바뀌면 캐시를 안전하게 무효화한다.
+FINGERPRINT_ALGORITHM_VERSION = 1
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DB
 # ─────────────────────────────────────────────────────────────────────────────
-def db() -> sqlite3.Connection:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
+    """OCR 캐시와 별도 지문 캐시 스키마를 준비한 연결을 반환한다.
+
+    테스트나 호출자는 임시 SQLite 연결을 넘길 수 있어 사용자 캐시를 건드리지 않는다.
+    """
+    if conn is None:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute(
         """
@@ -87,6 +95,18 @@ def db() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE saved_projects ADD COLUMN characteristics TEXT NOT NULL DEFAULT ''"
         )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS fingerprint_cache (
+            path              TEXT PRIMARY KEY,
+            mtime             INTEGER NOT NULL,
+            size              INTEGER NOT NULL,
+            algorithm_version INTEGER NOT NULL,
+            sha256            TEXT NOT NULL,
+            phash             TEXT
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -179,11 +199,286 @@ def set_project_enabled(name: str, enabled: bool) -> int:
 
 
 def file_sha(path: Path, limit: int = 2_000_000) -> str:
+    """OCR 캐시 비교용으로 파일 앞부분과 크기의 SHA-256을 계산한다."""
     h = hashlib.sha256()
     with path.open("rb") as f:
         h.update(f.read(limit))
     h.update(str(path.stat().st_size).encode())
     return h.hexdigest()
+
+
+def _full_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """완전 중복 판정용으로 파일 전체의 SHA-256을 스트리밍 계산한다."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        while chunk := f.read(chunk_size):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class ImageFingerprint:
+    """유사 이미지 탐지용, OCR과 독립된 파일 지문."""
+
+    path: Path
+    sha256: str
+    phash: str | None
+
+
+@dataclass(frozen=True)
+class MemberSimilarity:
+    """한 그룹 구성원의 보존 후보 기준 유사도.
+
+    ``distance``는 keeper와의 perceptual hash Hamming 거리다. ``exact``
+    그룹에서는 파일 전체가 같으므로 pHash 값과 관계없이 0이다.
+    ``similarity_percent``는 pHash 비트 폭에서 계산해 소수 둘째 자리로
+    반올림한 0~100 백분율이다.
+    """
+
+    member: ImageFingerprint
+    distance: int
+    similarity_percent: float
+
+
+@dataclass(frozen=True)
+class SimilarityError:
+    """한 입력 파일의 지문 수집 또는 지원 형식 확인 실패 정보."""
+
+    path: Path
+    message: str
+
+
+class DuplicateDetectionResult(list["DuplicateGroup"]):
+    """중복 그룹과 파일별 오류를 함께 담는 탐지 결과.
+
+    기존 호출자의 리스트 사용 방식은 유지하면서 ``errors``로 개별 실패를
+    확인할 수 있다.
+    """
+
+    def __init__(
+        self,
+        groups: list["DuplicateGroup"] = (),
+        errors: list[SimilarityError] = (),
+    ) -> None:
+        super().__init__(groups)
+        self.errors = tuple(errors)
+
+
+@dataclass(frozen=True)
+class DuplicateGroup:
+    """비파괴 중복 탐지 결과.
+
+    ``kind``는 전체 SHA-256으로 검증한 ``"exact"`` 또는 perceptual hash로
+    검증한 ``"near"``다. ``members``는 경로 기준으로 안정적으로 정렬된
+    :class:`ImageFingerprint`이며, ``keeper``는 보존할 구성원이다. 탐지 API가
+    반환한 모든 그룹에는 keeper가 있고, 나머지는 ``duplicate_candidates``로
+    접근할 수 있다. ``member_similarities``는 ``members``와 같은 경로순으로
+    정렬되며, 각 구성원의 keeper 기준 Hamming 거리와 유사도 백분율을 제공한다.
+
+    ``keeper``의 기본값은 기존의 ``DuplicateGroup(kind, members)`` 생성자를
+    사용하는 호출자와의 호환성을 위한 것이다.
+    """
+
+    kind: str
+    members: tuple[ImageFingerprint, ...]
+    keeper: ImageFingerprint | None = None
+    member_similarities: tuple[MemberSimilarity, ...] = ()
+
+    @property
+    def duplicate_candidates(self) -> tuple[ImageFingerprint, ...]:
+        """보존 후보를 제외한, 비파괴 탐지 결과의 중복 후보를 반환한다."""
+        return tuple(member for member in self.members if member != self.keeper)
+
+
+def _image_pixel_area(path: Path) -> int:
+    """이미지의 저장된 픽셀 면적을 반환하고 읽을 수 없으면 0을 반환한다."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            width, height = image.size
+        return width * height
+    except Exception:
+        return 0
+
+
+def _keeper_sort_key(fingerprint: ImageFingerprint) -> tuple[int, int, str]:
+    """보존 후보 우선순위 키: 큰 면적, 큰 파일, 경로 사전순.
+
+    이 함수는 파일이나 DB를 변경하지 않으므로 duplicate group 결과를 결정하는
+    순수한 읽기 전용 정렬 키로 사용할 수 있다.
+    """
+    try:
+        file_size = fingerprint.path.stat().st_size
+    except OSError:
+        file_size = 0
+    return (-_image_pixel_area(fingerprint.path), -file_size, str(fingerprint.path))
+
+
+def _with_keeper(kind: str, members: list[ImageFingerprint]) -> DuplicateGroup:
+    """정렬된 중복 구성원으로 결정적인 보존 후보를 포함한 그룹을 만든다."""
+    ordered_members = tuple(members)
+    keeper = min(ordered_members, key=_keeper_sort_key)
+    if kind == "exact":
+        similarities = tuple(
+            MemberSimilarity(member, distance=0, similarity_percent=100.0)
+            for member in ordered_members
+        )
+    else:
+        similarities = []
+        for member in ordered_members:
+            distance = 0 if member == keeper else _phash_distance(keeper.phash, member.phash)
+            similarities.append(
+                MemberSimilarity(
+                    member,
+                    distance=distance,
+                    similarity_percent=_phash_similarity_percent(distance, keeper.phash),
+                )
+            )
+        similarities = tuple(similarities)
+    return DuplicateGroup(kind, ordered_members, keeper, similarities)
+
+
+def _compute_image_fingerprint(path: Path) -> ImageFingerprint:
+    """파일 SHA와 EXIF 방향 보정 perceptual hash를 새로 계산한다.
+
+    손상 파일 등 Pillow 디코드 실패는 perceptual hash만 비워 두므로, 다른 파일의
+    지문 수집을 중단시키지 않는다.
+    """
+    sha256 = _full_file_sha256(path)
+    phash: str | None = None
+    try:
+        from PIL import Image, ImageOps
+        import imagehash
+
+        with Image.open(path) as image:
+            normalized = ImageOps.exif_transpose(image)
+            phash = str(imagehash.phash(normalized))
+    except Exception:
+        pass
+    return ImageFingerprint(path=path, sha256=sha256, phash=phash)
+
+
+def image_fingerprint(path: str | Path, *, conn: sqlite3.Connection | None = None) -> ImageFingerprint:
+    """파일 지문을 반환하고, 동일한 메타데이터·알고리즘 버전에서는 캐시를 쓴다."""
+    image_path = Path(path)
+    st = image_path.stat()
+    conn = db(conn)
+    cache_key = str(image_path)
+    row = conn.execute(
+        "SELECT mtime, size, algorithm_version, sha256, phash FROM fingerprint_cache WHERE path=?",
+        (cache_key,),
+    ).fetchone()
+    if (
+        row
+        and row["mtime"] == st.st_mtime_ns
+        and row["size"] == st.st_size
+        and row["algorithm_version"] == FINGERPRINT_ALGORITHM_VERSION
+    ):
+        return ImageFingerprint(image_path, row["sha256"], row["phash"])
+
+    fingerprint = _compute_image_fingerprint(image_path)
+    conn.execute(
+        """INSERT INTO fingerprint_cache(path,mtime,size,algorithm_version,sha256,phash)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(path) DO UPDATE SET
+             mtime=excluded.mtime, size=excluded.size,
+             algorithm_version=excluded.algorithm_version, sha256=excluded.sha256,
+             phash=excluded.phash""",
+        (
+            cache_key,
+            st.st_mtime_ns,
+            st.st_size,
+            FINGERPRINT_ALGORITHM_VERSION,
+            fingerprint.sha256,
+            fingerprint.phash,
+        ),
+    )
+    conn.commit()
+    return fingerprint
+
+
+def _phash_distance(first: str, second: str) -> int | None:
+    """두 hexadecimal perceptual hash의 Hamming 거리를 안전하게 계산한다."""
+    try:
+        if len(first) != len(second):
+            return None
+        return (int(first, 16) ^ int(second, 16)).bit_count()
+    except ValueError:
+        return None
+
+
+def _phash_similarity_percent(distance: int | None, phash: str | None) -> float:
+    """pHash 거리와 비트 폭으로 표시용 유사도를 안정적으로 계산한다."""
+    if distance is None or not phash:
+        raise ValueError("valid perceptual hash distance is required")
+    bit_width = len(phash) * 4
+    if bit_width == 0:
+        raise ValueError("perceptual hash must not be empty")
+    return round(max(0, min(bit_width, bit_width - distance)) / bit_width * 100, 2)
+
+
+def find_duplicate_groups(
+    paths: list[str | Path],
+    *,
+    hamming_threshold: int = 8,
+    conn: sqlite3.Connection | None = None,
+) -> DuplicateDetectionResult:
+    """OCR·분류 DB와 독립적으로 exact/near 이미지 중복 그룹을 찾는다.
+
+    정상적으로 perceptual hash를 계산하지 못한 파일과 이미지 확장자가 아닌 입력은
+    ``errors``에 개별 실패로 담고 검사는 계속한다. Exact 그룹을 먼저 만들고, 나머지는 경로순 greedy
+    complete-link로 묶는다. 따라서 near 그룹의 모든 두 구성원은 임계값 이내다.
+    반환 그룹은 모두 하나의 ``keeper``와 그 외 ``duplicate_candidates``를
+    포함하며, 이 함수는 파일 이동·삭제나 OCR을 수행하지 않는다.
+    """
+    if hamming_threshold < 0:
+        raise ValueError("hamming_threshold must be non-negative")
+
+    errors: list[SimilarityError] = []
+    image_paths: list[Path] = []
+    for path in sorted({Path(path) for path in paths}, key=lambda item: str(item)):
+        if path.suffix.lower() not in IMAGE_EXTS:
+            errors.append(SimilarityError(path, "지원하지 않는 이미지 형식입니다"))
+        else:
+            image_paths.append(path)
+
+    fingerprints: list[ImageFingerprint] = []
+    for path in image_paths:
+        try:
+            fingerprint = image_fingerprint(path, conn=conn)
+        except OSError as exc:
+            errors.append(SimilarityError(path, str(exc)))
+            continue
+        # pHash가 없으면 Pillow가 파일을 이미지로 정상 디코드하지 못한 것이다.
+        if fingerprint.phash is not None:
+            fingerprints.append(fingerprint)
+        else:
+            errors.append(SimilarityError(path, "이미지를 읽을 수 없거나 지원하지 않는 형식입니다"))
+
+    by_sha: dict[str, list[ImageFingerprint]] = {}
+    for fingerprint in fingerprints:
+        by_sha.setdefault(fingerprint.sha256, []).append(fingerprint)
+
+    exact_groups = [_with_keeper("exact", members) for _, members in sorted(by_sha.items()) if len(members) > 1]
+    exact_paths = {member.path for group in exact_groups for member in group.members}
+    near_candidates = [fingerprint for fingerprint in fingerprints if fingerprint.path not in exact_paths]
+
+    near_clusters: list[list[ImageFingerprint]] = []
+    for candidate in near_candidates:
+        for cluster in near_clusters:
+            distances = [_phash_distance(candidate.phash, member.phash) for member in cluster]
+            if all(distance is not None and distance <= hamming_threshold for distance in distances):
+                cluster.append(candidate)
+                break
+        else:
+            near_clusters.append([candidate])
+
+    near_groups = [_with_keeper("near", cluster) for cluster in near_clusters if len(cluster) > 1]
+    return DuplicateDetectionResult(
+        exact_groups + near_groups,
+        sorted(errors, key=lambda error: str(error.path)),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
