@@ -23,6 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Set up build environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
       - name: Check signing secrets
         env:
           APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
@@ -38,7 +43,7 @@ jobs:
         run: |
           RELEASE_KEYCHAIN="$RUNNER_TEMP/shotsort-signing.keychain-db"
           RELEASE_KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-$(uuidgen)}"
-          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 -D > "$RUNNER_TEMP/certificate.p12"
           security create-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
           security set-keychain-settings -lut 21600 "$RELEASE_KEYCHAIN"
           security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"

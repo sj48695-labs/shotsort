@@ -17,6 +17,7 @@ trap cleanup EXIT
 
 mkdir -p "$MOUNT_POINT" "$APPLICATIONS_DIR"
 hdiutil attach "$DMG_PATH" -nobrowse -readonly -mountpoint "$MOUNT_POINT" -quiet
+xcrun stapler validate "$DMG_PATH"
 
 APP_PATH="$MOUNT_POINT/shotsort.app"
 [ -d "$APP_PATH" ] || { echo "DMG에 shotsort.app이 없습니다." >&2; exit 1; }
@@ -25,5 +26,4 @@ cp -R "$APP_PATH" "$APPLICATIONS_DIR/"
 INSTALLED_APP="$APPLICATIONS_DIR/shotsort.app"
 codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP"
 spctl -a -vvv -t install "$INSTALLED_APP"
-xcrun stapler validate "$INSTALLED_APP"
 echo "✅ clean macOS 설치 smoke 통과"
