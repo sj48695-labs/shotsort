@@ -26,15 +26,24 @@ class SimilarityFingerprintTests(unittest.TestCase):
         self.conn.close()
         self.tmpdir.cleanup()
 
-    def test_file_sha_reads_content_after_two_megabytes(self):
+    def test_full_file_sha256_reads_content_after_two_megabytes(self):
+        path = self.root / "large.bin"
+        prefix = b"a" * (2 * 1024 * 1024)
+        path.write_bytes(prefix + b"first")
+        first = engine._full_file_sha256(path)
+        path.write_bytes(prefix + b"other")
+
+        self.assertEqual(engine._full_file_sha256(path), hashlib.sha256(prefix + b"other").hexdigest())
+        self.assertNotEqual(engine._full_file_sha256(path), first)
+
+    def test_file_sha_keeps_ocr_cache_hashing_contract(self):
         path = self.root / "large.bin"
         prefix = b"a" * (2 * 1024 * 1024)
         path.write_bytes(prefix + b"first")
         first = engine.file_sha(path)
         path.write_bytes(prefix + b"other")
 
-        self.assertEqual(engine.file_sha(path), hashlib.sha256(prefix + b"other").hexdigest())
-        self.assertNotEqual(engine.file_sha(path), first)
+        self.assertEqual(engine.file_sha(path), first)
 
     def test_fingerprint_cache_hits_then_invalidates_when_file_changes(self):
         path = self.root / "image.png"
@@ -285,7 +294,7 @@ class SimilarityFingerprintTests(unittest.TestCase):
         self.assertEqual(group.keeper, fingerprints[earlier])
         self.assertEqual(group.duplicate_candidates, (fingerprints[later],))
 
-    def test_broken_and_non_image_inputs_are_safely_excluded(self):
+    def test_broken_and_non_image_inputs_are_safely_excluded_with_individual_errors(self):
         valid = self.root / "valid.png"
         broken = self.root / "broken.png"
         text = self.root / "notes.txt"
@@ -293,10 +302,12 @@ class SimilarityFingerprintTests(unittest.TestCase):
         broken.write_bytes(b"not an image")
         text.write_text("not an image")
 
-        self.assertEqual(
-            engine.find_duplicate_groups([valid, broken, text, self.root / "missing.png"], conn=self.conn),
-            [],
+        result = engine.find_duplicate_groups(
+            [valid, broken, text, self.root / "missing.png"], conn=self.conn
         )
+
+        self.assertEqual(result, [])
+        self.assertEqual([error.path for error in result.errors], [broken, self.root / "missing.png", text])
 
 
 if __name__ == "__main__":

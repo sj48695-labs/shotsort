@@ -198,8 +198,17 @@ def set_project_enabled(name: str, enabled: bool) -> int:
     return cur.rowcount
 
 
-def file_sha(path: Path, chunk_size: int = 1024 * 1024) -> str:
-    """파일 전체의 SHA-256을 고정 크기 청크로 계산한다."""
+def file_sha(path: Path, limit: int = 2_000_000) -> str:
+    """OCR 캐시 비교용으로 파일 앞부분과 크기의 SHA-256을 계산한다."""
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        h.update(f.read(limit))
+    h.update(str(path.stat().st_size).encode())
+    return h.hexdigest()
+
+
+def _full_file_sha256(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """완전 중복 판정용으로 파일 전체의 SHA-256을 스트리밍 계산한다."""
     h = hashlib.sha256()
     with path.open("rb") as f:
         while chunk := f.read(chunk_size):
@@ -229,6 +238,30 @@ class MemberSimilarity:
     member: ImageFingerprint
     distance: int
     similarity_percent: float
+
+
+@dataclass(frozen=True)
+class SimilarityError:
+    """한 입력 파일의 지문 수집 또는 지원 형식 확인 실패 정보."""
+
+    path: Path
+    message: str
+
+
+class DuplicateDetectionResult(list["DuplicateGroup"]):
+    """중복 그룹과 파일별 오류를 함께 담는 탐지 결과.
+
+    기존 호출자의 리스트 사용 방식은 유지하면서 ``errors``로 개별 실패를
+    확인할 수 있다.
+    """
+
+    def __init__(
+        self,
+        groups: list["DuplicateGroup"] = (),
+        errors: list[SimilarityError] = (),
+    ) -> None:
+        super().__init__(groups)
+        self.errors = tuple(errors)
 
 
 @dataclass(frozen=True)
@@ -312,7 +345,7 @@ def _compute_image_fingerprint(path: Path) -> ImageFingerprint:
     손상 파일 등 Pillow 디코드 실패는 perceptual hash만 비워 두므로, 다른 파일의
     지문 수집을 중단시키지 않는다.
     """
-    sha256 = file_sha(path)
+    sha256 = _full_file_sha256(path)
     phash: str | None = None
     try:
         from PIL import Image, ImageOps
@@ -390,11 +423,11 @@ def find_duplicate_groups(
     *,
     hamming_threshold: int = 8,
     conn: sqlite3.Connection | None = None,
-) -> list[DuplicateGroup]:
+) -> DuplicateDetectionResult:
     """OCR·분류 DB와 독립적으로 exact/near 이미지 중복 그룹을 찾는다.
 
     정상적으로 perceptual hash를 계산하지 못한 파일과 이미지 확장자가 아닌 입력은
-    안전하게 제외한다. Exact 그룹을 먼저 만들고, 나머지는 경로순 greedy
+    ``errors``에 개별 실패로 담고 검사는 계속한다. Exact 그룹을 먼저 만들고, 나머지는 경로순 greedy
     complete-link로 묶는다. 따라서 near 그룹의 모든 두 구성원은 임계값 이내다.
     반환 그룹은 모두 하나의 ``keeper``와 그 외 ``duplicate_candidates``를
     포함하며, 이 함수는 파일 이동·삭제나 OCR을 수행하지 않는다.
@@ -402,19 +435,26 @@ def find_duplicate_groups(
     if hamming_threshold < 0:
         raise ValueError("hamming_threshold must be non-negative")
 
-    image_paths = sorted(
-        {Path(path) for path in paths if Path(path).suffix.lower() in IMAGE_EXTS},
-        key=lambda path: str(path),
-    )
+    errors: list[SimilarityError] = []
+    image_paths: list[Path] = []
+    for path in sorted({Path(path) for path in paths}, key=lambda item: str(item)):
+        if path.suffix.lower() not in IMAGE_EXTS:
+            errors.append(SimilarityError(path, "지원하지 않는 이미지 형식입니다"))
+        else:
+            image_paths.append(path)
+
     fingerprints: list[ImageFingerprint] = []
     for path in image_paths:
         try:
             fingerprint = image_fingerprint(path, conn=conn)
-        except OSError:
+        except OSError as exc:
+            errors.append(SimilarityError(path, str(exc)))
             continue
         # pHash가 없으면 Pillow가 파일을 이미지로 정상 디코드하지 못한 것이다.
         if fingerprint.phash is not None:
             fingerprints.append(fingerprint)
+        else:
+            errors.append(SimilarityError(path, "이미지를 읽을 수 없거나 지원하지 않는 형식입니다"))
 
     by_sha: dict[str, list[ImageFingerprint]] = {}
     for fingerprint in fingerprints:
@@ -435,7 +475,10 @@ def find_duplicate_groups(
             near_clusters.append([candidate])
 
     near_groups = [_with_keeper("near", cluster) for cluster in near_clusters if len(cluster) > 1]
-    return exact_groups + near_groups
+    return DuplicateDetectionResult(
+        exact_groups + near_groups,
+        sorted(errors, key=lambda error: str(error.path)),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
