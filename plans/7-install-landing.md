@@ -34,7 +34,7 @@
 - `.github/workflows/ci.yml`의 checkout/setup-python/test 구성을 그대로 두고, release는 tag만 처리하는 독립 `.github/workflows/release.yml`로 둔다. 일반 PR CI가 Apple secrets나 macOS 비용에 의존하지 않는다.
 - 정적 랜딩은 저장소 `docs/landing/`에 자체 HTML/CSS/소량 JavaScript로 둔다. 앱의 NiceGUI UI나 Python 런타임에 랜딩 코드를 섞지 않는다.
 
-## Phase 1 — 재현 가능한 서명·공증 빌드 경계
+## Phase 1 — 재현 가능한 서명·공증 빌드 경계 (완료)
 
 변경 파일: `build_app.sh`, `packaging/entitlements.plist`, `tests/test_build_app_contract.py`
 
@@ -49,7 +49,7 @@
 
 예정 커밋: `feat: [P1] #7 서명·공증 가능한 DMG 빌드 추가`
 
-## Phase 2 — 태그 릴리스 checksum과 clean-macOS smoke
+## Phase 2 — 태그 릴리스 checksum과 clean-macOS smoke (완료)
 
 변경 파일: `.github/workflows/release.yml`, `scripts/release/verify_dmg.sh`, `scripts/release/smoke_install.sh`, `docs/SIGNING.md`
 
@@ -64,7 +64,7 @@
 
 예정 커밋: `ci: [P2] #7 notarized DMG 릴리스와 설치 smoke 추가`
 
-## Phase 3 — 개인정보·다운로드·FAQ 중심 공개 랜딩
+## Phase 3 — 개인정보·다운로드·FAQ 중심 공개 랜딩 (완료)
 
 변경 파일: `docs/landing/index.html`, `docs/landing/styles.css`, `docs/landing/app.js`, `.github/workflows/pages.yml`, `README.md`
 
