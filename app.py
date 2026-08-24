@@ -18,6 +18,10 @@ from pathlib import Path
 from nicegui import run, ui
 
 import engine
+from lazy_groups import GroupPage
+
+
+GROUP_PAGE_SIZE = 24
 
 
 @ui.page("/")
@@ -166,8 +170,8 @@ def index():
             for g, items in groups.items():
                 dele = sum(1 for it in items if it["deletable"])
                 title = f"{g}  ({len(items)}개" + (f", 🗑 {dele}" if dele else "") + ")"
-                # 기본은 접힘 — 삭제후보 그룹과 큰 그룹(5장+)만 펼쳐서 노이즈를 줄인다.
-                expand = (g == engine.CLEANUP_GROUP) or len(items) >= 5
+                # 시작 속도를 위해 일반 그룹은 접어 둔다. 삭제 후보만 바로 보여 준다.
+                expand = g == engine.CLEANUP_GROUP
                 exp = ui.expansion(title, value=expand).classes("w-full border rounded")
                 # 그룹 전체를 드롭존으로 — 카드를 끌어다 놓으면 그 그룹으로 재분류(접힘 무관).
                 exp.on("dragover.prevent", lambda: None)
@@ -201,9 +205,45 @@ def index():
                             "이 그룹 휴지통으로", color="red",
                             on_click=lambda _, name=g: do_trash_group(name),
                         ).props("flat dense")
-                    with ui.row().classes("flex-wrap gap-3"):
-                        for it in items:
-                            _thumb_card(it)
+                    _lazy_group_cards(exp, items, initially_expanded=expand)
+
+    def _lazy_group_cards(expansion, items: list[dict], *, initially_expanded: bool):
+        """Create thumbnail cards only as an expansion needs each bounded page."""
+        cards_box = ui.row().classes("flex-wrap gap-3")
+        more_box = ui.row().classes("items-center gap-2")
+        page = GroupPage(len(items), GROUP_PAGE_SIZE)
+
+        def render_page(indexes: range):
+            if not indexes:
+                return
+            with cards_box:
+                for index in indexes:
+                    _thumb_card(items[index])
+
+        def refresh_more():
+            more_box.clear()
+            if not page.remaining:
+                return
+
+            def load_more():
+                render_page(page.more())
+                refresh_more()
+
+            with more_box:
+                ui.button(
+                    f"{min(page.page_size, page.remaining)}개 더 보기",
+                    icon="expand_more",
+                    on_click=load_more,
+                ).props("flat dense")
+                ui.label(f"{page.remaining}개 남음").classes("text-xs text-gray-500")
+
+        def reveal_group(expanded: bool):
+            render_page(page.reveal(expanded=expanded))
+            if expanded:
+                refresh_more()
+
+        expansion.on_value_change(lambda e: reveal_group(e.value))
+        reveal_group(initially_expanded)
 
     def _start_drag(p: str):
         # 끄는 카드가 선택돼 있으면 선택 전체를, 아니면 그 카드만 끈다.
