@@ -75,10 +75,16 @@ def db() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS saved_projects (
             name       TEXT PRIMARY KEY COLLATE NOCASE,
             aliases    TEXT NOT NULL DEFAULT '[]',
+            characteristics TEXT NOT NULL DEFAULT '',
             enabled    INTEGER NOT NULL DEFAULT 1
         )
         """
     )
+    project_columns = {row[1] for row in conn.execute("PRAGMA table_info(saved_projects)")}
+    if "characteristics" not in project_columns:
+        conn.execute(
+            "ALTER TABLE saved_projects ADD COLUMN characteristics TEXT NOT NULL DEFAULT ''"
+        )
     conn.commit()
     return conn
 
@@ -101,29 +107,56 @@ def list_projects() -> list[dict]:
     """저장 프로젝트 목록. 이름 기준으로 안정적으로 정렬해 반환한다."""
     conn = db()
     rows = conn.execute(
-        "SELECT name, aliases, enabled FROM saved_projects ORDER BY name COLLATE NOCASE"
+        """SELECT name, aliases, characteristics, enabled
+           FROM saved_projects ORDER BY name COLLATE NOCASE"""
     ).fetchall()
     return [
         {"name": row["name"], "aliases": json.loads(row["aliases"]),
+         "characteristics": row["characteristics"],
          "enabled": bool(row["enabled"])}
         for row in rows
     ]
 
 
-def save_project(name: str, aliases: list[str] | str | None, enabled: bool = True) -> dict:
+def save_project(
+    name: str,
+    aliases: list[str] | str | None,
+    enabled: bool = True,
+    characteristics: str = "",
+) -> dict:
     """프로젝트 규칙을 추가하거나 같은 이름의 규칙을 갱신한다."""
     name = (name or "").strip()
     if not name:
         raise ValueError("프로젝트 이름은 비워 둘 수 없습니다")
     clean_aliases = _normalise_aliases(aliases)
+    characteristics = (characteristics or "").strip()
     conn = db()
     conn.execute(
-        """INSERT INTO saved_projects(name, aliases, enabled) VALUES(?,?,?)
-           ON CONFLICT(name) DO UPDATE SET aliases=excluded.aliases, enabled=excluded.enabled""",
-        (name, json.dumps(clean_aliases, ensure_ascii=False), int(enabled)),
+        """INSERT INTO saved_projects(name, aliases, characteristics, enabled) VALUES(?,?,?,?)
+           ON CONFLICT(name) DO UPDATE SET aliases=excluded.aliases,
+             characteristics=excluded.characteristics, enabled=excluded.enabled""",
+        (name, json.dumps(clean_aliases, ensure_ascii=False), characteristics, int(enabled)),
     )
     conn.commit()
-    return {"name": name, "aliases": clean_aliases, "enabled": bool(enabled)}
+    return {"name": name, "aliases": clean_aliases,
+            "characteristics": characteristics, "enabled": bool(enabled)}
+
+
+def resolve_project_rules(
+    conn: sqlite3.Connection | None = None, *, enabled_only: bool = True
+) -> list[dict]:
+    """분류기에 전달할 저장 프로젝트 규칙을 이름 순으로 반환한다."""
+    conn = conn or db()
+    where = "WHERE enabled=1" if enabled_only else ""
+    rows = conn.execute(
+        f"""SELECT name, aliases, characteristics, enabled FROM saved_projects
+            {where} ORDER BY name COLLATE NOCASE"""
+    ).fetchall()
+    return [
+        {"name": row["name"], "aliases": json.loads(row["aliases"]),
+         "characteristics": row["characteristics"], "enabled": bool(row["enabled"])}
+        for row in rows
+    ]
 
 
 def delete_project(name: str) -> int:
@@ -244,16 +277,36 @@ PER_IMAGE_SYSTEM = (
 )
 
 
-def classify_image(client, model: str, ocr_text: str, image_path: Path, with_image: bool) -> dict:
+def classify_image(
+    client,
+    model: str,
+    ocr_text: str,
+    image_path: Path,
+    with_image: bool,
+    project_rules: list[dict] | None = None,
+) -> dict:
     content = []
+    image_attached = False
     if with_image:
         img_b64, media = _downscaled_b64(image_path)
         if img_b64:
             content.append(
                 {"type": "image", "source": {"type": "base64", "media_type": media, "data": img_b64}}
             )
+            image_attached = True
     text = ocr_text.strip() or "(OCR 텍스트 없음 - 이미지/사진일 가능성)"
-    content.append({"type": "text", "text": f"파일명: {image_path.name}\n\nOCR 텍스트:\n{text[:6000]}"})
+    prompt = f"파일명: {image_path.name}\n\nOCR 텍스트:\n{text[:6000]}"
+    if project_rules:
+        descriptions = []
+        for rule in project_rules:
+            aliases = ", ".join(rule.get("aliases") or []) or "없음"
+            line = f'- {rule["name"]} (별칭: {aliases})'
+            if image_attached and rule.get("characteristics"):
+                line += f'; 이미지에서 확인할 특징: {rule["characteristics"]}'
+            descriptions.append(line)
+        prompt += ("\n\n저장된 프로젝트 후보입니다. 근거가 맞을 때 project를 정확한 "
+                   "프로젝트명으로 반환하세요:\n" + "\n".join(descriptions))
+    content.append({"type": "text", "text": prompt})
 
     resp = client.messages.create(
         model=model,
@@ -326,7 +379,9 @@ CONSOLIDATE_SCHEMA = {
 }
 
 
-def consolidate_groups(client, items: list[dict]) -> dict[int, str]:
+def consolidate_groups(
+    client, items: list[dict], project_rules: list[dict] | None = None
+) -> dict[int, str]:
     """free-form project 추정치들을 깔끔한 그룹명으로 정규화."""
     listing = "\n".join(
         f'{it["id"]}: project="{it["project"]}", kind={it["kind"]}, summary="{it["summary"]}"'
@@ -337,6 +392,9 @@ def consolidate_groups(client, items: list[dict]) -> dict[int, str]:
         "거의 같은 주제는 같은 그룹명으로 통일하고, 지워도 될 잡다한 것들은 '정리(삭제후보)' 그룹으로 모아라. "
         "그룹 수는 너무 많지 않게(대략 4~12개) 의미 단위로 묶어라."
     )
+    if project_rules:
+        candidates = ", ".join(rule["name"] for rule in project_rules)
+        system += f" 저장된 프로젝트 후보({candidates})와 일치하면 그 정확한 이름을 그룹명으로 사용하라."
     resp = client.messages.create(
         model=CONSOLIDATE_MODEL,
         max_tokens=4000,
@@ -582,6 +640,7 @@ def scan_images(
 
     conn = db()
     client = get_client() if use_llm else None
+    project_rules = resolve_project_rules(conn) if use_llm else []
 
     for i, path in enumerate(imgs, 1):
         sp = str(path)
@@ -596,7 +655,7 @@ def scan_images(
 
         text = ocr(path)
         try:
-            tag = (classify_image(client, model, text, path, with_image)
+            tag = (classify_image(client, model, text, path, with_image, project_rules)
                    if use_llm else classify_local(text, path))
         except Exception as e:
             res.errors.append((path.name, str(e)))
@@ -648,7 +707,8 @@ def consolidate_all(
     if not rows:
         return 0
     items = [dict(r) for r in rows]
-    mapping = (consolidate_groups(get_client(), items) if use_llm
+    project_rules = resolve_project_rules(conn) if use_llm else []
+    mapping = (consolidate_groups(get_client(), items, project_rules) if use_llm
                else consolidate_local(items))
     for rid, grp in mapping.items():
         conn.execute("UPDATE images SET grp=? WHERE rowid=?", (grp, rid))

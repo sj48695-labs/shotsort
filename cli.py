@@ -158,8 +158,12 @@ def cmd_projects(args):
 
     if args.action == "add":
         aliases = [a.strip() for a in (args.aliases or "").split(",") if a.strip()]
-        project = engine.save_project(args.name, aliases, enabled=True)
+        project = engine.save_project(
+            args.name, aliases, enabled=True, characteristics=args.characteristics or ""
+        )
         print(f"저장: {project['name']} ({', '.join(project['aliases']) or '별칭 없음'})")
+        if project["characteristics"]:
+            print(f"특징: {project['characteristics']}")
         return
 
     if args.action == "remove":
@@ -226,6 +230,10 @@ def build_parser() -> argparse.ArgumentParser:
     pa = psub.add_parser("add", help="프로젝트 추가 또는 수정")
     pa.add_argument("name", help="표시할 프로젝트명")
     pa.add_argument("--aliases", default="", help="OCR/파일명에서 찾을 별칭(쉼표 구분)")
+    pa.add_argument(
+        "--characteristics", default="",
+        help="화면의 색상·형태 등 시각적 특징(썸네일 전송 시 Claude 분류에 사용)",
+    )
     pa.set_defaults(func=cmd_projects)
     for action, help_text in (("remove", "프로젝트 삭제"), ("enable", "프로젝트 활성화"),
                               ("disable", "프로젝트 비활성화")):

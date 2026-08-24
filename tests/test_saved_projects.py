@@ -2,6 +2,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import engine
@@ -40,13 +41,74 @@ class SavedProjectsTest(unittest.TestCase):
         engine.save_project("act-server", ["act server", "gitlab.com/acme/act"])
         engine.save_project("hitc", "hitc.io", enabled=False)
         self.assertEqual(engine.list_projects(), [
-            {"name": "act-server", "aliases": ["act server", "gitlab.com/acme/act"], "enabled": True},
-            {"name": "hitc", "aliases": ["hitc.io"], "enabled": False},
+            {"name": "act-server", "aliases": ["act server", "gitlab.com/acme/act"],
+             "characteristics": "", "enabled": True},
+            {"name": "hitc", "aliases": ["hitc.io"], "characteristics": "",
+             "enabled": False},
         ])
         self.assertEqual(engine.set_project_enabled("hitc", True), 1)
         self.assertEqual(engine.delete_project("act-server"), 1)
         self.assertEqual(engine.list_projects(), [
-            {"name": "hitc", "aliases": ["hitc.io"], "enabled": True}])
+            {"name": "hitc", "aliases": ["hitc.io"], "characteristics": "",
+             "enabled": True}])
+
+    def test_characteristics_persist_and_active_rules_resolve(self):
+        saved = engine.save_project(
+            "act", ["act chat"], characteristics="주황색 대화방 형태"
+        )
+        engine.save_project("disabled", [], enabled=False, characteristics="파란 화면")
+        self.assertEqual(saved["characteristics"], "주황색 대화방 형태")
+        self.assertEqual(engine.resolve_project_rules(self.conn), [{
+            "name": "act", "aliases": ["act chat"],
+            "characteristics": "주황색 대화방 형태", "enabled": True,
+        }])
+        self.assertEqual(len(engine.resolve_project_rules(self.conn, enabled_only=False)), 2)
+
+    def test_existing_saved_projects_table_is_migrated(self):
+        self.conn.close()
+        self.db_path.unlink()
+        old = sqlite3.connect(self.db_path)
+        old.execute(
+            "CREATE TABLE saved_projects(name TEXT PRIMARY KEY, aliases TEXT, enabled INTEGER)"
+        )
+        old.execute("INSERT INTO saved_projects VALUES('act', '[]', 1)")
+        old.commit()
+        old.close()
+        self.conn = engine.db()
+        row = self.conn.execute(
+            "SELECT characteristics FROM saved_projects WHERE name='act'"
+        ).fetchone()
+        self.assertEqual(row[0], "")
+
+    def test_visual_characteristics_only_enter_prompt_with_image(self):
+        calls = []
+
+        class Messages:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                payload = {"project": "act", "kind": "chat", "summary": "대화",
+                           "deletable": False, "confidence": 0.9}
+                return SimpleNamespace(content=[SimpleNamespace(
+                    type="text", text=__import__("json").dumps(payload))])
+
+        client = SimpleNamespace(messages=Messages())
+        rules = [{"name": "act", "aliases": [],
+                  "characteristics": "주황색 대화방 형태", "enabled": True}]
+        image = self.root / "screen.png"
+        engine.classify_image(client, "model", "hello", image, False, rules)
+        text_prompt = calls[-1]["messages"][0]["content"][-1]["text"]
+        self.assertIn("act", text_prompt)
+        self.assertNotIn("주황색 대화방 형태", text_prompt)
+
+        with patch.object(engine, "_downscaled_b64", return_value=(None, None)):
+            engine.classify_image(client, "model", "hello", image, True, rules)
+        failed_image_prompt = calls[-1]["messages"][0]["content"][-1]["text"]
+        self.assertNotIn("주황색 대화방 형태", failed_image_prompt)
+
+        with patch.object(engine, "_downscaled_b64", return_value=("abc", "image/jpeg")):
+            engine.classify_image(client, "model", "hello", image, True, rules)
+        image_prompt = calls[-1]["messages"][0]["content"][-1]["text"]
+        self.assertIn("주황색 대화방 형태", image_prompt)
 
     def test_existing_images_table_is_migrated(self):
         self.conn.close()

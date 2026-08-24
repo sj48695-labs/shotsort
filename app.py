@@ -114,7 +114,10 @@ def index():
                     project["name"],
                     icon="check_circle" if project["enabled"] else "pause_circle",
                 ).props("dense outline" if project["enabled"] else "dense outline color=grey")
-                chip.tooltip(aliases or "별칭 없음")
+                detail = aliases or "별칭 없음"
+                if project["characteristics"]:
+                    detail += f"\n특징: {project['characteristics']}"
+                chip.tooltip(detail)
 
     def selected_paths() -> list[str]:
         return [p for p, cb in checks.items() if cb.value]
@@ -327,7 +330,7 @@ def index():
             with ui.row().classes("items-start w-full"):
                 with ui.column().classes("gap-0"):
                     ui.label("자주 쓰는 프로젝트").classes("text-xl font-bold")
-                    ui.label("OCR·요약·파일명에서 별칭을 찾으면 이 프로젝트로 묶습니다.").classes(
+                    ui.label("텍스트 별칭과 화면의 시각적 특징을 함께 저장할 수 있습니다.").classes(
                         "text-sm text-gray-500"
                     )
                 ui.space()
@@ -337,6 +340,12 @@ def index():
             aliases_in = ui.input(
                 "별칭 (쉼표 구분)", placeholder="예: act server, github.com/acme/act-server"
             ).classes("w-full")
+            characteristics_in = ui.textarea(
+                "화면 특징", placeholder="예: 주황색 대화방 형태"
+            ).props("autogrow").classes("w-full")
+            ui.label(
+                "색상·형태 특징은 Claude 모드에서 ‘썸네일도 전송’을 켰을 때 사용됩니다."
+            ).classes("text-xs text-amber-700")
 
             async def save_current():
                 name = (name_in.value or "").strip()
@@ -344,7 +353,13 @@ def index():
                     ui.notify("프로젝트명을 입력하세요.", type="warning")
                     return
                 aliases = [a.strip() for a in (aliases_in.value or "").split(",") if a.strip()]
-                await run.io_bound(engine.save_project, name, aliases)
+                await run.io_bound(
+                    engine.save_project,
+                    name,
+                    aliases,
+                    True,
+                    (characteristics_in.value or "").strip(),
+                )
                 dialog.submit(True)
 
             with ui.row().classes("justify-end w-full"):
@@ -361,6 +376,10 @@ def index():
                                 ui.label(", ".join(project["aliases"]) or "별칭 없음").classes(
                                     "text-xs text-gray-500"
                                 )
+                                if project["characteristics"]:
+                                    ui.label(project["characteristics"]).classes(
+                                        "text-xs text-amber-700"
+                                    )
                             toggle.on_value_change(
                                 lambda e, name=project["name"]: engine.set_project_enabled(name, e.value)
                             )

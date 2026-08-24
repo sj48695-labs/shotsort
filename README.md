@@ -104,13 +104,16 @@ OCR 휴리스틱만으로는 1장당 1그룹이 되기 쉬워, 그룹이 폭증�
 
 앱의 **프로젝트 관리**에서 `act-server`, `hitc`처럼 반복해서 분류하는 프로젝트를
 저장할 수 있습니다. 별칭은 OCR 텍스트·요약·파일명에서 찾을 표현을 쉼표로
-구분합니다. 활성 프로젝트 규칙은 현재 스캔한 파일에만 적용됩니다.
+구분합니다. `주황색 대화방 형태` 같은 화면 특징도 함께 기록할 수 있으며,
+Claude 모드에서 **썸네일도 전송**을 켰을 때 시각 분류 힌트로 사용됩니다.
+활성 프로젝트 규칙은 현재 스캔한 파일에만 적용됩니다.
 
 그룹은 **수동 이동/이름 변경 → 저장 프로젝트 → 자동 그룹화 → 종류 버킷** 순서로
 결정됩니다. 한 번 직접 옮긴 이미지는 다음 스캔에서 자동 분류가 덮어쓰지 않습니다.
 
 ```bash
 ./run.sh cli projects add hitc --aliases "hitc,hitc-client"
+./run.sh cli projects add act --characteristics "주황색 대화방 형태"
 ./run.sh cli projects disable hitc
 ./run.sh cli projects enable hitc
 ./run.sh cli projects remove hitc
