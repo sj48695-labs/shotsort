@@ -156,6 +156,8 @@ shotsort는 OpenAI·Grok 모델명을 임의로 고정하지 않으며 사용자
 
 설치 전 데이터 처리 경계와 다운로드 checksum은 [공개 설치 랜딩](https://sj48695-labs.github.io/shotsort/)에 정리되어 있습니다. 설치 경험이나 문제는 [GitHub feedback issue](https://github.com/sj48695-labs/shotsort/issues/new)로 알려 주세요. 별도 분석 쿠키나 SDK는 사용하지 않습니다.
 
+> 유지보수자: 첫 Pages 배포 전에는 Pages 쓰기 권한이 있는 토큰을 `PAGES_SETUP_TOKEN` GitHub Actions secret으로 등록한 뒤 `Deploy landing page`를 실행하세요. 토큰 값은 저장소나 로그에 기록하지 않습니다.
+
 ---
 
 ## 안전장치
