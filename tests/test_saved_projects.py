@@ -230,6 +230,76 @@ class SavedProjectsTest(unittest.TestCase):
         self.assertEqual(len(set(mapping.values())), 1)
         self.assertNotEqual(next(iter(mapping.values())), "화면")
 
+    def test_strong_ocr_similarity_does_not_cross_capture_sessions(self):
+        items = [
+            {"id": 1, "path": "", "project": "unknown", "kind": "ui",
+             "summary": "shared deploy dashboard", "ocr_text": "shared deploy dashboard",
+             "deletable": False, "mtime": 1_000},
+            {"id": 2, "path": "", "project": "unknown", "kind": "ui",
+             "summary": "shared deploy dashboard", "ocr_text": "shared deploy dashboard",
+             "deletable": False, "mtime": 1_601},
+        ]
+        sessions = engine._capture_sessions(items)
+        self.assertNotEqual(sessions[1], sessions[2])
+
+    def test_confident_names_are_scoped_to_their_capture_session(self):
+        stamp = 1_000
+        items = []
+        for session, start in enumerate((stamp, stamp + 700)):
+            for offset in range(3):
+                items.append({
+                    "id": session * 3 + offset + 1, "path": "",
+                    "project": "deploy-dashboard", "kind": "ui",
+                    "summary": "deploy dashboard shared", "ocr_text": "deploy dashboard",
+                    "deletable": False, "mtime": start + offset * 30,
+                })
+        mapping = engine.consolidate_local(items)
+        self.assertEqual(set(mapping.values()), {"deploy-dashboard"})
+
+    def test_capture_session_boundary_is_strictly_over_ten_minutes(self):
+        sessions = engine._capture_sessions([
+            {"id": 1, "mtime": 1_000},
+            {"id": 2, "mtime": 1_600},
+            {"id": 3, "mtime": 2_201},
+        ])
+        self.assertEqual(sessions[1], sessions[2])
+        self.assertNotEqual(sessions[2], sessions[3])
+
+    def test_untrusted_project_names_use_one_session_kind_label(self):
+        stamp = 1_000
+        items = [
+            {"id": 1, "path": "", "project": "https://example.com/a/b", "kind": "ui",
+             "summary": "random alpha", "ocr_text": "", "deletable": False,
+             "mtime": stamp},
+            {"id": 2, "path": "", "project": "What do you actually want me to do next",
+             "kind": "ui", "summary": "random bravo", "ocr_text": "",
+             "deletable": False, "mtime": stamp + 60},
+        ]
+        mapping = engine.consolidate_local(items)
+        self.assertEqual(set(mapping.values()), {"화면"})
+
+    def test_broken_ocr_candidate_is_not_used_for_confident_cluster_name(self):
+        stamp = 1_000
+        items = [
+            {"id": index, "path": "", "project": "aaioHkioiqA 0141640aLIEF",
+             "kind": "ui", "summary": "shared panel", "ocr_text": "shared panel",
+             "deletable": False, "mtime": stamp + index * 30}
+            for index in range(1, 4)
+        ]
+        mapping = engine.consolidate_local(items)
+        self.assertEqual(set(mapping.values()), {"화면"})
+
+    def test_sentence_and_ocr_url_variants_are_not_trusted_group_names(self):
+        self.assertFalse(engine._trusted_group_name("Failed to authenticate"))
+        self.assertFalse(engine._trusted_group_name("act.mintdev.ukladmin"))
+
+    def test_legacy_items_without_time_keep_kind_fallback(self):
+        mapping = engine.consolidate_local([
+            {"id": 1, "path": "", "project": "unknown", "kind": "doc",
+             "summary": "", "ocr_text": "", "deletable": False},
+        ])
+        self.assertEqual(mapping[1], "문서")
+
     def test_close_capture_times_alone_do_not_group_unrelated_screens(self):
         items = [
             {"id": 1, "path": "", "project": "alpha-app", "kind": "ui",
@@ -243,9 +313,9 @@ class SavedProjectsTest(unittest.TestCase):
              "mtime": 1_120},
         ]
         mapping = engine.consolidate_local(items)
-        self.assertTrue(all(group == "화면" for group in mapping.values()))
+        self.assertEqual(set(mapping.values()), {"화면"})
 
-    def test_ten_minute_gap_does_not_strengthen_weak_relationship(self):
+    def test_exact_ten_minute_gap_stays_in_same_session_fallback(self):
         items = []
         for index, suffix in enumerate(("deploy staging branch review ticket",
                                         "invoice customer payment receipt",
@@ -261,7 +331,7 @@ class SavedProjectsTest(unittest.TestCase):
                 "mtime": 1_000 + index * 600,
             })
         mapping = engine.consolidate_local(items)
-        self.assertTrue(all(group == "화면" for group in mapping.values()))
+        self.assertEqual(set(mapping.values()), {"화면"})
 
     def test_consolidate_all_passes_file_mtime_to_local_grouping(self):
         path = self.root / "timed.png"

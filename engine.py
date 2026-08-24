@@ -564,7 +564,46 @@ _KIND_LABEL = {
 }
 CLEANUP_GROUP = "정리(삭제후보)"
 TEMPORAL_BOOST_SECONDS = 3 * 60
+SESSION_GAP_SECONDS = 10 * 60
 TEMPORAL_VISUAL_SIMILARITY = 0.88
+
+
+def _capture_sessions(items: list[dict]) -> dict[int, float | None]:
+    """mtime 순서에서 직전 캡처와 10분 초과로 벌어질 때 새 세션을 연다."""
+    timed = sorted(
+        (float(it["mtime"]), it["id"])
+        for it in items if isinstance(it.get("mtime"), (int, float))
+    )
+    sessions: dict[int, float | None] = {it["id"]: None for it in items}
+    start = previous = None
+    for mtime, item_id in timed:
+        if previous is None or mtime - previous > SESSION_GAP_SECONDS:
+            start = mtime
+        sessions[item_id] = start
+        previous = mtime
+    return sessions
+
+
+def _trusted_group_name(name: str) -> bool:
+    """URL, OCR 문장, 지나치게 긴/깨진 문자열을 프로젝트명에서 제외한다."""
+    value = (name or "").strip()
+    if not _looks_named(value) or len(value) > 30 or "\n" in value:
+        return False
+    if _re.search(r"(?:https?://|www\.|\.[a-z]{2,}/)", value, _re.I):
+        return False
+    # 자동 OCR 후보는 앱/프로젝트 식별자처럼 짧은 이름만 허용한다. 자연어 문장은
+    # summary 신호로는 유용하지만 그룹 제목으로 쓰면 그룹 수가 급증한다.
+    if len(value.split()) > 2:
+        return False
+    if "." in value:
+        return False
+    if sum(c.isdigit() for c in value) / len(value) > 0.2:
+        return False
+    letters = [c for c in value if c.isalpha()]
+    if len(letters) >= 6 and sum(c.isupper() for c in letters) / len(letters) > 0.6:
+        return False
+    useful = sum(c.isalnum() or c in " ._-/()" for c in value)
+    return useful / len(value) >= 0.85
 
 
 def classify_local(text: str, path: Path) -> dict:
@@ -613,6 +652,7 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
         docs.append((it["id"], _tokens(blob), it, _visual_descriptor(it.get("path", ""))))
 
     parent = {d[0]: d[0] for d in docs}
+    sessions = _capture_sessions(items)
 
     def find(x):
         while parent[x] != x:
@@ -631,6 +671,12 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
             if docs[j][0] in deletables or not docs[j][1]:
                 continue
             tj = docs[j][1]
+            left_session = sessions[docs[i][0]]
+            right_session = sessions[docs[j][0]]
+            # 시간이 있는 캡처는 세션 경계를 절대 넘겨 union하지 않는다. 시간이 없는
+            # legacy 행끼리는 기존 텍스트/시각 그룹화를 그대로 유지한다.
+            if left_session != right_session:
+                continue
             inter = len(ti & tj)
             lexical = inter / len(ti | tj) if inter else 0.0
             # 시각 특징은 약한 텍스트 관계를 보강할 뿐이다. 공유 OCR 토큰이 없으면
@@ -683,7 +729,7 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
                 mapping[i] = CLEANUP_GROUP
             continue
         name = cluster_name(members)
-        if len(members) >= CONFIDENT_MIN and _looks_named(name):
+        if len(members) >= CONFIDENT_MIN and _trusted_group_name(name):
             for i in ids:
                 mapping[i] = name[:30]
         else:
