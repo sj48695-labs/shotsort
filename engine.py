@@ -563,6 +563,8 @@ _KIND_LABEL = {
     "diagram": "다이어그램", "doc": "문서", "ui": "화면", "photo": "사진", "other": "기타",
 }
 CLEANUP_GROUP = "정리(삭제후보)"
+TEMPORAL_BOOST_SECONDS = 3 * 60
+TEMPORAL_VISUAL_SIMILARITY = 0.88
 
 
 def classify_local(text: str, path: Path) -> dict:
@@ -600,7 +602,8 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
     """로컬 그룹핑.
 
     1) 삭제후보는 '정리(삭제후보)' 한 그룹으로.
-    2) 나머지는 토큰 겹침(Jaccard) union-find 로 클러스터링.
+    2) 나머지는 토큰 겹침(Jaccard) union-find 로 클러스터링. 3분 이내 연속
+       캡처는 약한 텍스트 또는 화면 유사성이 있을 때만 병합을 보강한다.
     3) 2장+ 클러스터 → 대표 깨끗한 이름. 안 묶인 1장(싱글톤)은 '기타·{종류}' 버킷으로
        흡수 → 1장당 1그룹(미분류) 폭증을 막는다.
     """
@@ -637,7 +640,21 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
                 and docs[i][2].get("kind") == docs[j][2].get("kind")
                 and _visual_similarity(docs[i][3], docs[j][3]) >= 0.88
             )
-            if lexical >= 0.3 or visually_supported:
+            left_mtime = docs[i][2].get("mtime")
+            right_mtime = docs[j][2].get("mtime")
+            same_kind = docs[i][2].get("kind") == docs[j][2].get("kind")
+            close_in_time = (
+                isinstance(left_mtime, (int, float))
+                and isinstance(right_mtime, (int, float))
+                and abs(left_mtime - right_mtime) <= TEMPORAL_BOOST_SECONDS
+            )
+            weakly_related = inter >= 1 or (
+                same_kind
+                and _visual_similarity(docs[i][3], docs[j][3])
+                >= TEMPORAL_VISUAL_SIMILARITY
+            )
+            temporally_supported = close_in_time and same_kind and weakly_related
+            if lexical >= 0.3 or visually_supported or temporally_supported:
                 parent[find(docs[i][0])] = find(docs[j][0])
 
     clusters: dict[int, list] = {}
@@ -814,7 +831,7 @@ def consolidate_all(
     """선택 범위를 2차 그룹 정규화. 수동 그룹은 절대 덮어쓰지 않는다."""
     conn = conn or db()
     rows = conn.execute(
-        """SELECT rowid AS id, path, project, kind, summary, ocr_text, deletable
+        """SELECT rowid AS id, path, mtime, project, kind, summary, ocr_text, deletable
            FROM images WHERE COALESCE(manual_group, 0)=0"""
     ).fetchall()
     rows = [r for r in rows if _path_in_scope(r["path"], paths=paths, root=root)]

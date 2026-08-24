@@ -211,6 +211,86 @@ class SavedProjectsTest(unittest.TestCase):
         mapping = engine.consolidate_local(items)
         self.assertTrue(all(group == "화면" for group in mapping.values()))
 
+    def test_close_capture_times_strengthen_weak_text_relationship(self):
+        items = []
+        for index, suffix in enumerate(("deploy staging branch review ticket",
+                                        "invoice customer payment receipt",
+                                        "diagram architecture service database")):
+            items.append({
+                "id": index + 1,
+                "path": str(self.root / f"time-{index}.png"),
+                "project": f"workspace-{index}",
+                "kind": "ui",
+                "summary": f"shared-session {suffix}",
+                "ocr_text": "",
+                "deletable": False,
+                "mtime": 1_000 + index * 60,
+            })
+        mapping = engine.consolidate_local(items)
+        self.assertEqual(len(set(mapping.values())), 1)
+        self.assertNotEqual(next(iter(mapping.values())), "화면")
+
+    def test_close_capture_times_alone_do_not_group_unrelated_screens(self):
+        items = [
+            {"id": 1, "path": "", "project": "alpha-app", "kind": "ui",
+             "summary": "deploy staging branch", "ocr_text": "", "deletable": False,
+             "mtime": 1_000},
+            {"id": 2, "path": "", "project": "bravo-shop", "kind": "ui",
+             "summary": "customer invoice payment", "ocr_text": "", "deletable": False,
+             "mtime": 1_060},
+            {"id": 3, "path": "", "project": "charlie-map", "kind": "ui",
+             "summary": "architecture database service", "ocr_text": "", "deletable": False,
+             "mtime": 1_120},
+        ]
+        mapping = engine.consolidate_local(items)
+        self.assertTrue(all(group == "화면" for group in mapping.values()))
+
+    def test_ten_minute_gap_does_not_strengthen_weak_relationship(self):
+        items = []
+        for index, suffix in enumerate(("deploy staging branch review ticket",
+                                        "invoice customer payment receipt",
+                                        "diagram architecture service database")):
+            items.append({
+                "id": index + 1,
+                "path": "",
+                "project": f"workspace-{index}",
+                "kind": "ui",
+                "summary": f"shared-session {suffix}",
+                "ocr_text": "",
+                "deletable": False,
+                "mtime": 1_000 + index * 600,
+            })
+        mapping = engine.consolidate_local(items)
+        self.assertTrue(all(group == "화면" for group in mapping.values()))
+
+    def test_consolidate_all_passes_file_mtime_to_local_grouping(self):
+        path = self.root / "timed.png"
+        add_image(self.conn, path, text="workspace deploy")
+        self.conn.execute("UPDATE images SET mtime=? WHERE path=?", (1_234.5, str(path)))
+        self.conn.commit()
+        expected_mtime = self.conn.execute(
+            "SELECT mtime FROM images WHERE path=?", (str(path),)).fetchone()[0]
+        with patch.object(engine, "consolidate_local", return_value={}) as consolidate:
+            engine.consolidate_all(conn=self.conn, use_llm=False, paths=[path])
+        self.assertEqual(consolidate.call_args.args[0][0]["mtime"], expected_mtime)
+
+    @unittest.skipIf(Image is None, "Pillow unavailable")
+    def test_close_capture_times_strengthen_visual_relationship_without_text_overlap(self):
+        items = []
+        for index, project in enumerate(("alpha-app", "bravo-shop", "charlie-map")):
+            path = self.root / f"visual-time-{index}.png"
+            image = Image.new("RGB", (120, 90), "#fafafa")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((0, 0, 119, 20), fill="#333333")
+            draw.rectangle((10, 32, 105, 60), fill="#dddddd")
+            image.save(path)
+            items.append({"id": index + 1, "path": str(path), "project": project,
+                          "kind": "ui", "summary": project, "ocr_text": "",
+                          "deletable": False, "mtime": 1_000 + index * 60})
+        mapping = engine.consolidate_local(items)
+        self.assertEqual(len(set(mapping.values())), 1)
+        self.assertNotEqual(next(iter(mapping.values())), "화면")
+
     @unittest.skipIf(Image is None, "Pillow unavailable")
     def test_orange_chat_characteristic_can_match_locally(self):
         path = self.root / "conversation.png"
