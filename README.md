@@ -56,6 +56,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 `./run.sh` (또는 `python app.py`) 로 독립 창이 뜹니다.
 
 - **경로 지정 → 스캔**: 실시간 진행률 표시, 결과는 그룹별 썸네일 격자로
+- **자주 쓰는 프로젝트**: 프로젝트명과 별칭을 한 번 저장하면 이후 스캔에 자동 적용
 - **그룹**: 기본 접힘(삭제후보·큰 그룹만 펼침), 크기순 정렬. 헤더의 `이 그룹 휴지통으로` 로 그룹 통째 정리
 - **선택 삭제**: 카드 체크 → `선택 항목 휴지통으로` (확인 후 복구 가능한 휴지통으로)
 - **모드 전환**: 좌상단 `로컬 모드` 스위치로 무료 휴리스틱 ↔ Claude 분류
@@ -66,6 +67,8 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 ./run.sh cli scan                      # ~/Desktop 분석 (캐시된 건 스킵)
 ./run.sh cli scan ~/Pictures --with-image
 ./run.sh cli groups                    # 프로젝트별 그룹
+./run.sh cli projects add act-server --aliases "act server,github.com/acme/act-server"
+./run.sh cli projects list             # 저장 프로젝트 확인
 ./run.sh cli groups --deletable        # 삭제 후보만
 ./run.sh cli trash --group "영수증"     # 그룹 통째 휴지통(확인 후)
 ./run.sh cli trash --deletable          # 삭제 후보 전부 휴지통
@@ -96,6 +99,22 @@ OCR 휴리스틱만으로는 1장당 1그룹이 되기 쉬워, 그룹이 폭증�
 - 거의 빈 캡처는 `정리(삭제후보)` 그룹으로 모음
 
 > 무료·오프라인이지만 정확도는 Claude 모드보다 낮습니다. 키를 설정하고 다시 스캔하면 자동으로 Claude 분류로 업그레이드됩니다. 키가 있어도 `--local` 로 로컬 강제 가능.
+
+### 자주 쓰는 프로젝트와 그룹 우선순위
+
+앱의 **프로젝트 관리**에서 `act-server`, `hitc`처럼 반복해서 분류하는 프로젝트를
+저장할 수 있습니다. 별칭은 OCR 텍스트·요약·파일명에서 찾을 표현을 쉼표로
+구분합니다. 활성 프로젝트 규칙은 현재 스캔한 파일에만 적용됩니다.
+
+그룹은 **수동 이동/이름 변경 → 저장 프로젝트 → 자동 그룹화 → 종류 버킷** 순서로
+결정됩니다. 한 번 직접 옮긴 이미지는 다음 스캔에서 자동 분류가 덮어쓰지 않습니다.
+
+```bash
+./run.sh cli projects add hitc --aliases "hitc,hitc-client"
+./run.sh cli projects disable hitc
+./run.sh cli projects enable hitc
+./run.sh cli projects remove hitc
+```
 
 ---
 

@@ -143,6 +143,38 @@ def cmd_stats(args):
     print(f"삭제 후보     : {s.deletable}개 (약 {engine.human_mb(s.deletable_bytes)})")
 
 
+def cmd_projects(args):
+    """자주 쓰는 프로젝트 규칙 관리."""
+    if args.action == "list":
+        projects = engine.list_projects()
+        if not projects:
+            print("저장된 프로젝트가 없습니다.")
+            return
+        for project in projects:
+            mark = "●" if project["enabled"] else "○"
+            aliases = ", ".join(project["aliases"]) or "(별칭 없음)"
+            print(f"{mark} {project['name']}: {aliases}")
+        return
+
+    if args.action == "add":
+        aliases = [a.strip() for a in (args.aliases or "").split(",") if a.strip()]
+        project = engine.save_project(args.name, aliases, enabled=True)
+        print(f"저장: {project['name']} ({', '.join(project['aliases']) or '별칭 없음'})")
+        return
+
+    if args.action == "remove":
+        n = engine.delete_project(args.name)
+        print("삭제했습니다." if n else f"프로젝트를 찾지 못했습니다: {args.name}")
+        return
+
+    enabled = args.action == "enable"
+    n = engine.set_project_enabled(args.name, enabled)
+    if not n:
+        print(f"프로젝트를 찾지 못했습니다: {args.name}", file=sys.stderr)
+        return
+    print(f"{args.name}: {'활성' if enabled else '비활성'}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="shotsort", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -186,6 +218,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     stp = sub.add_parser("stats", help="통계")
     stp.set_defaults(func=cmd_stats)
+
+    pp = sub.add_parser("projects", help="자주 쓰는 프로젝트 규칙 관리")
+    psub = pp.add_subparsers(dest="action", required=True)
+    pl = psub.add_parser("list", help="저장 프로젝트 목록")
+    pl.set_defaults(func=cmd_projects)
+    pa = psub.add_parser("add", help="프로젝트 추가 또는 수정")
+    pa.add_argument("name", help="표시할 프로젝트명")
+    pa.add_argument("--aliases", default="", help="OCR/파일명에서 찾을 별칭(쉼표 구분)")
+    pa.set_defaults(func=cmd_projects)
+    for action, help_text in (("remove", "프로젝트 삭제"), ("enable", "프로젝트 활성화"),
+                              ("disable", "프로젝트 비활성화")):
+        px = psub.add_parser(action, help=help_text)
+        px.add_argument("name")
+        px.set_defaults(func=cmd_projects)
     return p
 
 

@@ -67,7 +67,80 @@ def db() -> sqlite3.Connection:
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
+    if "manual_group" not in columns:
+        conn.execute("ALTER TABLE images ADD COLUMN manual_group INTEGER NOT NULL DEFAULT 0")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS saved_projects (
+            name       TEXT PRIMARY KEY COLLATE NOCASE,
+            aliases    TEXT NOT NULL DEFAULT '[]',
+            enabled    INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    conn.commit()
     return conn
+
+
+def _normalise_aliases(aliases: list[str] | str | None) -> list[str]:
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    seen: set[str] = set()
+    result: list[str] = []
+    for alias in aliases or []:
+        value = alias.strip()
+        folded = value.casefold()
+        if value and folded not in seen:
+            seen.add(folded)
+            result.append(value)
+    return result
+
+
+def list_projects() -> list[dict]:
+    """저장 프로젝트 목록. 이름 기준으로 안정적으로 정렬해 반환한다."""
+    conn = db()
+    rows = conn.execute(
+        "SELECT name, aliases, enabled FROM saved_projects ORDER BY name COLLATE NOCASE"
+    ).fetchall()
+    return [
+        {"name": row["name"], "aliases": json.loads(row["aliases"]),
+         "enabled": bool(row["enabled"])}
+        for row in rows
+    ]
+
+
+def save_project(name: str, aliases: list[str] | str | None, enabled: bool = True) -> dict:
+    """프로젝트 규칙을 추가하거나 같은 이름의 규칙을 갱신한다."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("프로젝트 이름은 비워 둘 수 없습니다")
+    clean_aliases = _normalise_aliases(aliases)
+    conn = db()
+    conn.execute(
+        """INSERT INTO saved_projects(name, aliases, enabled) VALUES(?,?,?)
+           ON CONFLICT(name) DO UPDATE SET aliases=excluded.aliases, enabled=excluded.enabled""",
+        (name, json.dumps(clean_aliases, ensure_ascii=False), int(enabled)),
+    )
+    conn.commit()
+    return {"name": name, "aliases": clean_aliases, "enabled": bool(enabled)}
+
+
+def delete_project(name: str) -> int:
+    conn = db()
+    cur = conn.execute("DELETE FROM saved_projects WHERE name=?", ((name or "").strip(),))
+    conn.commit()
+    return cur.rowcount
+
+
+def set_project_enabled(name: str, enabled: bool) -> int:
+    conn = db()
+    cur = conn.execute(
+        "UPDATE saved_projects SET enabled=? WHERE name=?",
+        (int(enabled), (name or "").strip()),
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def file_sha(path: Path, limit: int = 2_000_000) -> str:
@@ -549,7 +622,9 @@ def scan_images(
 
     if consolidate:
         try:
-            consolidate_all(conn=conn, use_llm=use_llm, project_hints=project_hints)
+            consolidate_all(
+                conn=conn, use_llm=use_llm, project_hints=project_hints, paths=imgs
+            )
         except Exception as e:
             res.consolidate_error = str(e)
     return res
@@ -560,12 +635,16 @@ def consolidate_all(
     *,
     use_llm: bool,
     project_hints: list[str] | None = None,
+    paths: list[str | Path] | None = None,
+    root: str | Path | None = None,
 ) -> int:
-    """DB 전체를 대상으로 2차 그룹 정규화. 반환: 갱신된 행 수."""
+    """선택 범위를 2차 그룹 정규화. 수동 그룹은 절대 덮어쓰지 않는다."""
     conn = conn or db()
     rows = conn.execute(
-        "SELECT rowid AS id, project, kind, summary, ocr_text, deletable FROM images"
+        """SELECT rowid AS id, path, project, kind, summary, ocr_text, deletable
+           FROM images WHERE COALESCE(manual_group, 0)=0"""
     ).fetchall()
+    rows = [r for r in rows if _path_in_scope(r["path"], paths=paths, root=root)]
     if not rows:
         return 0
     items = [dict(r) for r in rows]
@@ -575,12 +654,15 @@ def consolidate_all(
         conn.execute("UPDATE images SET grp=? WHERE rowid=?", (grp, rid))
     conn.commit()
     if project_hints:
-        apply_project_hints(project_hints, conn=conn)
+        apply_project_hints(project_hints, conn=conn, paths=paths, root=root)
+    apply_saved_projects(conn=conn, paths=paths, root=root)
     return len(mapping)
 
 
 def apply_project_hints(
-    hints: list[str], conn: sqlite3.Connection | None = None
+    hints: list[str], conn: sqlite3.Connection | None = None, *,
+    paths: list[str | Path] | None = None,
+    root: str | Path | None = None,
 ) -> int:
     """알려진 프로젝트명 힌트로 그룹을 덮어쓴다(로컬·Claude 공통 후처리).
 
@@ -598,14 +680,78 @@ def apply_project_hints(
     ]
     conn = conn or db()
     rows = conn.execute(
-        "SELECT rowid AS id, project, summary, ocr_text FROM images"
+        """SELECT rowid AS id, path, project, summary, ocr_text FROM images
+           WHERE COALESCE(manual_group, 0)=0"""
     ).fetchall()
     moved = 0
     for r in rows:
-        blob = f"{r['project'] or ''}\n{r['summary'] or ''}\n{r['ocr_text'] or ''}"
+        if not _path_in_scope(r["path"], paths=paths, root=root):
+            continue
+        blob = f"{Path(r['path']).name}\n{r['project'] or ''}\n{r['summary'] or ''}\n{r['ocr_text'] or ''}"
         for name, rx in patterns:
             if rx.search(blob):
                 conn.execute("UPDATE images SET grp=? WHERE rowid=?", (name, r["id"]))
+                moved += 1
+                break
+    conn.commit()
+    return moved
+
+
+def _path_in_scope(
+    path: str | Path, *, paths: list[str | Path] | None, root: str | Path | None
+) -> bool:
+    """범위가 없으면 전체, paths/root가 있으면 둘 중 하나에 포함될 때만 참."""
+    if paths is None and root is None:
+        return True
+    candidate = Path(path).expanduser().resolve()
+    if paths is not None:
+        allowed = {Path(p).expanduser().resolve() for p in paths}
+        if candidate in allowed:
+            return True
+    if root is not None:
+        scope = Path(root).expanduser().resolve()
+        if candidate == scope:
+            return True
+        try:
+            candidate.relative_to(scope)
+            return True
+        except ValueError:
+            pass
+    return False
+
+
+def apply_saved_projects(
+    conn: sqlite3.Connection | None = None, *,
+    paths: list[str | Path] | None = None,
+    root: str | Path | None = None,
+) -> int:
+    """활성 저장 프로젝트(이름+별칭)를 해당 범위의 자동 그룹에 적용한다."""
+    conn = conn or db()
+    rows = conn.execute(
+        "SELECT name, aliases FROM saved_projects WHERE enabled=1"
+    ).fetchall()
+    rules: list[tuple[str, str]] = []
+    for row in rows:
+        rules.extend((row["name"], term) for term in [row["name"], *json.loads(row["aliases"])] if term)
+    rules.sort(key=lambda rule: len(rule[1]), reverse=True)
+    patterns = [
+        # 파일명의 '-'도 자연스러운 단어 구분자로 취급하되 영숫자 내부는 매칭하지 않는다.
+        (name, _re.compile(rf"(?<!\w){_re.escape(term)}(?!\w)", _re.I))
+        for name, term in rules
+    ]
+    image_rows = conn.execute(
+        """SELECT rowid AS id, path, project, summary, ocr_text FROM images
+           WHERE COALESCE(manual_group, 0)=0"""
+    ).fetchall()
+    moved = 0
+    for row in image_rows:
+        if not _path_in_scope(row["path"], paths=paths, root=root):
+            continue
+        blob = (f"{Path(row['path']).name}\n{row['project'] or ''}\n"
+                f"{row['summary'] or ''}\n{row['ocr_text'] or ''}")
+        for name, rx in patterns:
+            if rx.search(blob):
+                conn.execute("UPDATE images SET grp=? WHERE rowid=?", (name, row["id"]))
                 moved += 1
                 break
     conn.commit()
@@ -781,7 +927,8 @@ def rename_group(old: str, new: str) -> int:
         return 0
     conn = db()
     cur = conn.execute(
-        "UPDATE images SET grp=? WHERE COALESCE(grp, project)=?", (new, old)
+        """UPDATE images SET grp=?, manual_group=1
+           WHERE COALESCE(grp, project)=?""", (new, old)
     )
     conn.commit()
     return cur.rowcount
@@ -796,11 +943,12 @@ def move_images_to_group(paths: list[str], group: str) -> int:
     if not group or not paths:
         return 0
     conn = db()
+    before = conn.total_changes
     conn.executemany(
-        "UPDATE images SET grp=? WHERE path=?", [(group, p) for p in paths]
+        "UPDATE images SET grp=?, manual_group=1 WHERE path=?", [(group, p) for p in paths]
     )
     conn.commit()
-    return len(paths)
+    return conn.total_changes - before
 
 
 def reveal_in_finder(path: str | Path) -> None:

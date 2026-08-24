@@ -58,12 +58,15 @@ def index():
             local_sw = ui.switch("로컬 모드(무료)", value=not has_key)
             img_sw = ui.switch("썸네일도 전송", value=False)
             scan_btn = ui.button("스캔", icon="search")
-        with ui.row().classes("items-center gap-2 w-full"):
-            hints_in = ui.input(
-                "프로젝트 힌트 (쉼표)",
-                placeholder="act-server, hitc, zipath — OCR 에 이 단어가 있으면 해당 프로젝트로 묶음",
-            ).classes("grow")
-            apply_hints_btn = ui.button("힌트로 다시 묶기", icon="auto_awesome").props("outline")
+        ui.separator()
+        with ui.row().classes("items-center gap-3 w-full"):
+            with ui.column().classes("gap-0 grow"):
+                ui.label("자주 쓰는 프로젝트").classes("text-sm font-medium")
+                ui.label("저장한 이름과 별칭은 다음 스캔부터 자동으로 우선 적용됩니다.").classes(
+                    "text-xs text-gray-500"
+                )
+            projects_btn = ui.button("프로젝트 관리", icon="bookmark").props("outline")
+        projects_box = ui.row().classes("items-center gap-2 w-full")
         mode_lbl = ui.label().classes("text-xs text-gray-500")
 
         def refresh_mode():
@@ -97,6 +100,21 @@ def index():
         stats_lbl.text = (
             f"이미지 {s.total}개 · 그룹 {s.groups}개 · 삭제후보 {s.deletable}개({engine.human_mb(s.deletable_bytes)})"
         )
+
+    def render_projects():
+        projects_box.clear()
+        projects = engine.list_projects()
+        with projects_box:
+            if not projects:
+                ui.label("아직 저장된 프로젝트가 없습니다.").classes("text-xs text-gray-400")
+                return
+            for project in projects:
+                aliases = ", ".join(project["aliases"])
+                chip = ui.chip(
+                    project["name"],
+                    icon="check_circle" if project["enabled"] else "pause_circle",
+                ).props("dense outline" if project["enabled"] else "dense outline color=grey")
+                chip.tooltip(aliases or "별칭 없음")
 
     def selected_paths() -> list[str]:
         return [p for p, cb in checks.items() if cb.value]
@@ -250,13 +268,11 @@ def index():
         progress.update(i=0, total=0, running=True)
         ui.notify("스캔 시작…", type="info")
         try:
-            hints = [h for h in hints_in.value.split(",") if h.strip()]
             res = await run.io_bound(
                 engine.scan_images,
                 root,
                 use_llm=use_llm,
                 with_image=img_sw.value,
-                project_hints=hints,
                 on_item=on_scan_item,
             )
         except Exception as e:
@@ -305,15 +321,61 @@ def index():
         update_stats()
         render_groups()
 
-    async def do_apply_hints():
-        hints = [h for h in hints_in.value.split(",") if h.strip()]
-        if not hints:
-            ui.notify("프로젝트 힌트를 쉼표로 입력하세요. 예: act-server, hitc, zipath", type="warning")
-            return
-        n = await run.io_bound(engine.apply_project_hints, hints)
-        ui.notify(f"{n}개 스크린샷을 힌트 프로젝트로 다시 묶었습니다.", type="positive")
-        update_stats()
-        render_groups()
+    async def manage_projects():
+        rows = engine.list_projects()
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-2xl"):
+            with ui.row().classes("items-start w-full"):
+                with ui.column().classes("gap-0"):
+                    ui.label("자주 쓰는 프로젝트").classes("text-xl font-bold")
+                    ui.label("OCR·요약·파일명에서 별칭을 찾으면 이 프로젝트로 묶습니다.").classes(
+                        "text-sm text-gray-500"
+                    )
+                ui.space()
+                ui.button(icon="close", on_click=dialog.close).props("flat round")
+
+            name_in = ui.input("프로젝트명", placeholder="예: act-server").classes("w-full")
+            aliases_in = ui.input(
+                "별칭 (쉼표 구분)", placeholder="예: act server, github.com/acme/act-server"
+            ).classes("w-full")
+
+            async def save_current():
+                name = (name_in.value or "").strip()
+                if not name:
+                    ui.notify("프로젝트명을 입력하세요.", type="warning")
+                    return
+                aliases = [a.strip() for a in (aliases_in.value or "").split(",") if a.strip()]
+                await run.io_bound(engine.save_project, name, aliases)
+                dialog.submit(True)
+
+            with ui.row().classes("justify-end w-full"):
+                ui.button("저장", icon="add", on_click=save_current)
+
+            if rows:
+                ui.separator()
+                with ui.column().classes("w-full gap-2 max-h-72 overflow-auto"):
+                    for project in rows:
+                        with ui.row().classes("items-center w-full p-2 border rounded"):
+                            toggle = ui.switch(value=project["enabled"])
+                            with ui.column().classes("gap-0 grow"):
+                                ui.label(project["name"]).classes("font-medium")
+                                ui.label(", ".join(project["aliases"]) or "별칭 없음").classes(
+                                    "text-xs text-gray-500"
+                                )
+                            toggle.on_value_change(
+                                lambda e, name=project["name"]: engine.set_project_enabled(name, e.value)
+                            )
+
+                            async def remove(name=project["name"]):
+                                await run.io_bound(engine.delete_project, name)
+                                dialog.submit(True)
+
+                            ui.button(icon="delete", on_click=remove).props("flat round color=grey").tooltip(
+                                f"{project['name']} 삭제"
+                            )
+        changed = await dialog
+        if changed:
+            render_projects()
+            ui.notify("프로젝트 설정을 저장했습니다. 다음 스캔부터 적용됩니다.", type="positive")
 
     async def do_organize_selected():
         groups = engine.list_groups()
@@ -506,7 +568,7 @@ def index():
         ui.timer(1.2, _restart, once=True)  # notify 가 렌더된 뒤 재시작
 
     scan_btn.on_click(do_scan)
-    apply_hints_btn.on_click(do_apply_hints)
+    projects_btn.on_click(manage_projects)
     organize_btn.on_click(do_organize_selected)
     trash_sel_btn.on_click(do_trash_selected)
     refresh_btn.on_click(lambda: (update_stats(), render_groups()))
@@ -517,6 +579,7 @@ def index():
     # 최초 표시
     update_stats()
     update_sel()
+    render_projects()
     render_groups()
 
 
