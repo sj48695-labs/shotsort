@@ -15,16 +15,13 @@
 
 ### 방법 1 — 앱 다운로드 (비개발자, 권장)
 
-1. **[최신 릴리스에서 `shotsort.dmg` 다운로드](https://github.com/sj48695-labs/shotsort/releases/latest)**
+1. **[최신 릴리스에서 `shotsort.dmg` 다운로드](https://github.com/sj48695-labs/shotsort/releases/latest?source=landing)**
 2. `.dmg` 를 열고 **shotsort 를 Applications 폴더로 드래그**
-3. **첫 실행만** — 서명 안 된 빌드라 macOS가 "악성 코드 확인 불가" 경고를 띄웁니다:
-   - 경고창은 **완료**로 닫고 → **시스템 설정 → 개인정보 보호 및 보안** → 아래 *"'shotsort'…차단됨"* 옆 **"그래도 열기"** 클릭 → 다시 **"열기"**
-   - 또는 터미널 한 줄: `xattr -dr com.apple.quarantine /Applications/shotsort.app`
-   - 이후엔 그냥 더블클릭으로 실행됩니다.
+3. 공증된 최신 릴리스라면 일반 앱처럼 실행합니다. DMG와 함께 받은 `shotsort.dmg.sha256`는 `shasum -a 256 -c shotsort.dmg.sha256`로 확인할 수 있습니다.
 
 API 키 없이 바로 동작합니다(무료 로컬 모드). 터미널·파이썬 설치 불필요.
 
-> 완전 무경고 실행(일반 앱처럼)은 Apple Developer 서명·공증이 필요합니다 — [docs/SIGNING.md](docs/SIGNING.md) 참고.
+> 서명·공증 릴리스가 준비되기 전에는 아래의 소스 실행 방법을 이용해 주세요. Gatekeeper 우회 명령은 안내하지 않습니다. [설치 랜딩](https://sj48695-labs.github.io/shotsort/)에서 개인정보, checksum, FAQ를 확인할 수 있습니다.
 
 ### 방법 2 — 소스로 실행 (개발자)
 
@@ -146,7 +143,7 @@ Claude 모드에서 **썸네일도 전송**을 켰을 때 시각 분류 힌트�
 
 **소스(git) 설치**: 앱을 열면 백그라운드로 원격과 비교해 새 버전이 있으면 **상단 배너**로 알리고, `업데이트` 버튼으로 `git pull` + 자동 재시작합니다.
 
-**`.app` 설치**: 앱이 GitHub 릴리스의 최신 버전과 비교해 새 버전이 있으면 **상단 배너로 알리고**, `다운로드` 버튼으로 릴리스 페이지를 엽니다. 거기서 새 `.dmg` 를 받아 교체하면 됩니다. (앱 자체 교체는 무서명 제약상 다운로드 안내 방식)
+**`.app` 설치**: 앱이 GitHub 릴리스의 최신 버전과 비교해 새 버전이 있으면 **상단 배너로 알리고**, `다운로드` 버튼으로 릴리스 페이지를 엽니다. 거기서 새 `.dmg` 를 받아 교체하면 됩니다.
 
 ---
 
@@ -156,6 +153,8 @@ Claude 모드에서 **썸네일도 전송**을 켰을 때 시각 분류 힌트�
 텍스트가 해당 공급자에 전송되고, **이미지 내용도 AI로 분석**을 켠 경우에만 축소
 이미지가 함께 전송됩니다. 모델별 비용·지원 기능은 각 공급자의 현재 문서를 확인하세요.
 shotsort는 OpenAI·Grok 모델명을 임의로 고정하지 않으며 사용자가 직접 입력합니다.
+
+설치 전 데이터 처리 경계와 다운로드 checksum은 [공개 설치 랜딩](https://sj48695-labs.github.io/shotsort/)에 정리되어 있습니다. 설치 경험이나 문제는 [GitHub feedback issue](https://github.com/sj48695-labs/shotsort/issues/new?labels=feedback)로 알려 주세요. 별도 분석 쿠키나 SDK는 사용하지 않습니다.
 
 ---
 

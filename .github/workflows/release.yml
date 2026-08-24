@@ -1,0 +1,71 @@
+name: Notarized DMG release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
+      NOTARY_PROFILE: shotsort-notary
+      NOTARY_KEYCHAIN: ${{ runner.temp }}/shotsort-signing.keychain-db
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Set up build environment
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
+      - name: Check signing secrets
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          for name in SIGN_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_CERTIFICATE_P12_BASE64 APPLE_CERTIFICATE_PASSWORD; do
+            [ -n "${!name:-}" ] || { echo "Missing required release secret: $name" >&2; exit 1; }
+          done
+      - name: Configure signing keychain and notary profile
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          RELEASE_KEYCHAIN="$RUNNER_TEMP/shotsort-signing.keychain-db"
+          RELEASE_KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-$(uuidgen)}"
+          echo "$APPLE_CERTIFICATE_P12_BASE64" | base64 -D > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$RELEASE_KEYCHAIN"
+          security unlock-keychain -p "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$RELEASE_KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychain -d user -s "$RELEASE_KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -k "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --keychain "$RELEASE_KEYCHAIN"
+      - name: Build signed and notarized DMG
+        run: ./build_app.sh
+      - name: Create checksum
+        run: scripts/release/verify_dmg.sh
+      - name: Smoke-test clean installation
+        run: scripts/release/smoke_install.sh
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/shotsort.dmg
+            dist/shotsort.dmg.sha256
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/shotsort-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/certificate.p12"
