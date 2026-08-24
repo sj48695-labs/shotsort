@@ -154,7 +154,7 @@ Claude 모드에서 **썸네일도 전송**을 켰을 때 시각 분류 힌트�
 이미지가 함께 전송됩니다. 모델별 비용·지원 기능은 각 공급자의 현재 문서를 확인하세요.
 shotsort는 OpenAI·Grok 모델명을 임의로 고정하지 않으며 사용자가 직접 입력합니다.
 
-설치 전 데이터 처리 경계와 다운로드 checksum은 [공개 설치 랜딩](https://sj48695-labs.github.io/shotsort/)에 정리되어 있습니다. 설치 경험이나 문제는 [GitHub feedback issue](https://github.com/sj48695-labs/shotsort/issues/new?labels=feedback)로 알려 주세요. 별도 분석 쿠키나 SDK는 사용하지 않습니다.
+설치 전 데이터 처리 경계와 다운로드 checksum은 [공개 설치 랜딩](https://sj48695-labs.github.io/shotsort/)에 정리되어 있습니다. 설치 경험이나 문제는 [GitHub feedback issue](https://github.com/sj48695-labs/shotsort/issues/new)로 알려 주세요. 별도 분석 쿠키나 SDK는 사용하지 않습니다.
 
 ---
 

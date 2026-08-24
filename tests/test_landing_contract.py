@@ -35,6 +35,8 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn("installed-version:", self.script)
         self.assertIn("installation-status:", self.script)
         self.assertIn("issues/new?", self.script)
+        self.assertNotIn('labels: "feedback"', self.script)
+        self.assertNotIn("labels=feedback", (Path(__file__).parents[1] / "README.md").read_text())
 
     def test_pages_deployment_enables_pages_and_publishes_the_landing_artifact(self):
         workflow = PAGES_WORKFLOW.read_text()
