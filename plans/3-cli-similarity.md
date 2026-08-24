@@ -24,7 +24,7 @@
 - `tests/test_similarity.py`의 `ImageFingerprint`/`DuplicateGroup` 픽스처와 `unittest.mock.patch.object` 방식이 엔진 API를 고정한 CLI 테스트의 선례다.
 - `README.md:CLI`은 명령 예시 위치이고, `README.md:중복·유사 이미지 탐지 API`의 “UI와 CLI도 현재 이 API를 호출하지 않습니다”는 #3 완료 시 갱신할 문장이다.
 
-## Phase 1 — 검사 출력과 명시적 선택 삭제
+## Phase 1 (완료): 검사 출력과 명시적 선택 삭제
 
 변경 파일: `cli.py`, `tests/test_cli_similarity.py`
 
