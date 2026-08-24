@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 import engine
 
@@ -120,6 +120,70 @@ class SimilarityFingerprintTests(unittest.TestCase):
         self.assertEqual(groups[0].kind, "near")
         self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[second]))
 
+    def test_exact_group_exposes_full_similarity_for_every_member(self):
+        first = self.root / "first.png"
+        second = self.root / "second.png"
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        fingerprints = {
+            first: engine.ImageFingerprint(first, "same-sha", "0000000000000000"),
+            second: engine.ImageFingerprint(second, "same-sha", "ffffffffffffffff"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            group = engine.find_duplicate_groups([second, first], conn=self.conn)[0]
+
+        self.assertEqual(
+            group.member_similarities,
+            (
+                engine.MemberSimilarity(fingerprints[first], distance=0, similarity_percent=100.0),
+                engine.MemberSimilarity(fingerprints[second], distance=0, similarity_percent=100.0),
+            ),
+        )
+
+    def test_near_group_scores_members_against_keeper_deterministically(self):
+        keeper = self.root / "keeper.png"
+        other = self.root / "other.png"
+        keeper.write_bytes(b"keeper-with-more-bytes")
+        other.write_bytes(b"other")
+        fingerprints = {
+            keeper: engine.ImageFingerprint(keeper, "keeper", "0000000000000000"),
+            other: engine.ImageFingerprint(other, "other", "0000000000000003"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            first = engine.find_duplicate_groups([other, keeper], hamming_threshold=2, conn=self.conn)[0]
+            second = engine.find_duplicate_groups([keeper, other], hamming_threshold=2, conn=self.conn)[0]
+
+        expected = (
+            engine.MemberSimilarity(fingerprints[keeper], distance=0, similarity_percent=100.0),
+            engine.MemberSimilarity(fingerprints[other], distance=2, similarity_percent=96.88),
+        )
+        self.assertEqual(first.keeper, fingerprints[keeper])
+        self.assertEqual(first.member_similarities, expected)
+        self.assertEqual(second.member_similarities, expected)
+
+    def test_near_group_at_threshold_keeps_score_and_complete_link_boundary(self):
+        first = self.root / "first.png"
+        second = self.root / "second.png"
+        third = self.root / "third.png"
+        first.write_bytes(b"first-is-deliberately-the-largest-file")
+        second.write_bytes(b"second")
+        third.write_bytes(b"third")
+        fingerprints = {
+            first: engine.ImageFingerprint(first, "first", "0000000000000000"),
+            second: engine.ImageFingerprint(second, "second", "0000000000000003"),
+            third: engine.ImageFingerprint(third, "third", "0000000000000007"),
+        }
+
+        with patch.object(engine, "image_fingerprint", side_effect=lambda path, **_: fingerprints[Path(path)]):
+            groups = engine.find_duplicate_groups([third, second, first], hamming_threshold=2, conn=self.conn)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[second]))
+        self.assertEqual(groups[0].member_similarities[1].distance, 2)
+        self.assertEqual(groups[0].member_similarities[1].similarity_percent, 96.88)
+
     def test_near_duplicate_chain_requires_complete_link(self):
         first = self.root / "a.png"
         middle = self.root / "b.png"
@@ -137,6 +201,40 @@ class SimilarityFingerprintTests(unittest.TestCase):
 
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0].members, (fingerprints[first], fingerprints[middle]))
+
+    def test_generated_images_detect_exact_and_reencoded_near_duplicates(self):
+        exact_source = self.root / "exact-source.png"
+        exact_copy = self.root / "exact-copy.png"
+        near_source = self.root / "near-source.png"
+        reencoded = self.root / "near-reencoded.jpg"
+        resized = self.root / "near-resized.webp"
+        unrelated = self.root / "unrelated.png"
+
+        image = Image.new("RGB", (160, 100), "white")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((10, 10, 150, 90), fill="navy")
+        draw.ellipse((35, 20, 115, 85), fill="gold")
+        draw.line((0, 0, 159, 99), fill="red", width=5)
+        image.save(exact_source)
+        exact_copy.write_bytes(exact_source.read_bytes())
+        near_image = image.copy()
+        near_image.putpixel((0, 99), (1, 1, 1))
+        near_image.save(near_source)
+        near_image.save(reencoded, quality=82)
+        near_image.resize((240, 150)).save(resized, quality=82)
+        Image.new("RGB", (160, 100), "black").save(unrelated)
+
+        groups = engine.find_duplicate_groups(
+            [unrelated, resized, near_source, reencoded, exact_copy, exact_source],
+            hamming_threshold=8,
+            conn=self.conn,
+        )
+
+        self.assertEqual([group.kind for group in groups], ["exact", "near"])
+        self.assertEqual({member.path for member in groups[0].members}, {exact_source, exact_copy})
+        self.assertEqual({member.path for member in groups[1].members}, {near_source, reencoded, resized})
+        self.assertTrue(all(score.similarity_percent == 100.0 for score in groups[0].member_similarities))
+        self.assertNotIn(unrelated, {member.path for group in groups for member in group.members})
 
     def test_keeper_prefers_larger_pixel_area(self):
         small = self.root / "small.png"

@@ -217,6 +217,21 @@ class ImageFingerprint:
 
 
 @dataclass(frozen=True)
+class MemberSimilarity:
+    """한 그룹 구성원의 보존 후보 기준 유사도.
+
+    ``distance``는 keeper와의 perceptual hash Hamming 거리다. ``exact``
+    그룹에서는 파일 전체가 같으므로 pHash 값과 관계없이 0이다.
+    ``similarity_percent``는 pHash 비트 폭에서 계산해 소수 둘째 자리로
+    반올림한 0~100 백분율이다.
+    """
+
+    member: ImageFingerprint
+    distance: int
+    similarity_percent: float
+
+
+@dataclass(frozen=True)
 class DuplicateGroup:
     """비파괴 중복 탐지 결과.
 
@@ -224,7 +239,8 @@ class DuplicateGroup:
     검증한 ``"near"``다. ``members``는 경로 기준으로 안정적으로 정렬된
     :class:`ImageFingerprint`이며, ``keeper``는 보존할 구성원이다. 탐지 API가
     반환한 모든 그룹에는 keeper가 있고, 나머지는 ``duplicate_candidates``로
-    접근할 수 있다.
+    접근할 수 있다. ``member_similarities``는 ``members``와 같은 경로순으로
+    정렬되며, 각 구성원의 keeper 기준 Hamming 거리와 유사도 백분율을 제공한다.
 
     ``keeper``의 기본값은 기존의 ``DuplicateGroup(kind, members)`` 생성자를
     사용하는 호출자와의 호환성을 위한 것이다.
@@ -233,6 +249,7 @@ class DuplicateGroup:
     kind: str
     members: tuple[ImageFingerprint, ...]
     keeper: ImageFingerprint | None = None
+    member_similarities: tuple[MemberSimilarity, ...] = ()
 
     @property
     def duplicate_candidates(self) -> tuple[ImageFingerprint, ...]:
@@ -268,7 +285,25 @@ def _keeper_sort_key(fingerprint: ImageFingerprint) -> tuple[int, int, str]:
 def _with_keeper(kind: str, members: list[ImageFingerprint]) -> DuplicateGroup:
     """정렬된 중복 구성원으로 결정적인 보존 후보를 포함한 그룹을 만든다."""
     ordered_members = tuple(members)
-    return DuplicateGroup(kind, ordered_members, min(ordered_members, key=_keeper_sort_key))
+    keeper = min(ordered_members, key=_keeper_sort_key)
+    if kind == "exact":
+        similarities = tuple(
+            MemberSimilarity(member, distance=0, similarity_percent=100.0)
+            for member in ordered_members
+        )
+    else:
+        similarities = []
+        for member in ordered_members:
+            distance = 0 if member == keeper else _phash_distance(keeper.phash, member.phash)
+            similarities.append(
+                MemberSimilarity(
+                    member,
+                    distance=distance,
+                    similarity_percent=_phash_similarity_percent(distance, keeper.phash),
+                )
+            )
+        similarities = tuple(similarities)
+    return DuplicateGroup(kind, ordered_members, keeper, similarities)
 
 
 def _compute_image_fingerprint(path: Path) -> ImageFingerprint:
@@ -338,6 +373,16 @@ def _phash_distance(first: str, second: str) -> int | None:
         return (int(first, 16) ^ int(second, 16)).bit_count()
     except ValueError:
         return None
+
+
+def _phash_similarity_percent(distance: int | None, phash: str | None) -> float:
+    """pHash 거리와 비트 폭으로 표시용 유사도를 안정적으로 계산한다."""
+    if distance is None or not phash:
+        raise ValueError("valid perceptual hash distance is required")
+    bit_width = len(phash) * 4
+    if bit_width == 0:
+        raise ValueError("perceptual hash must not be empty")
+    return round(max(0, min(bit_width, bit_width - distance)) / bit_width * 100, 2)
 
 
 def find_duplicate_groups(

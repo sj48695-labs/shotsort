@@ -100,6 +100,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 - `exact` 그룹은 파일 전체 SHA-256이 같은 이미지입니다.
 - `near` 그룹은 EXIF 방향을 정규화한 perceptual hash의 Hamming 거리가 임계값 이내이고, 그룹의 모든 구성원끼리도 이를 만족하는 이미지입니다.
 - 반환된 각 그룹은 `kind`, 경로와 지문이 든 `members`, 그리고 하나의 `keeper`를 제공합니다. 보존 후보는 픽셀 면적이 큰 파일, 파일 크기가 큰 파일, 경로 사전순 순서로 결정되고 나머지는 `duplicate_candidates`입니다.
+- `member_similarities`는 `members`와 같은 경로순의 `MemberSimilarity(member, distance, similarity_percent)` 튜플입니다. 모든 수치는 `keeper` 기준이며, `exact`는 모든 구성원이 거리 `0`·`100.0%`입니다. `near`는 같은 비트 폭의 pHash Hamming 거리를 백분율로 환산해 소수 둘째 자리로 반올림합니다. pHash는 시각적으로 비슷한 이미지를 찾는 휴리스틱이므로 오탐·미탐이 있을 수 있습니다.
 
 ### 로컬 모드의 그룹핑 (API 키 없을 때)
 
