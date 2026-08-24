@@ -26,7 +26,7 @@
 
 ## 구현 phases
 
-### P1 — Pages 활성화가 가능한 배포 workflow 복구
+### P1 (완료) — Pages 활성화가 가능한 배포 workflow 복구
 
 변경 파일(최대 3개):
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 LANDING = Path(__file__).parents[1] / "docs" / "landing"
+PAGES_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "pages.yml"
 
 
 class LandingContractTests(unittest.TestCase):
@@ -34,6 +35,16 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn("installed-version:", self.script)
         self.assertIn("installation-status:", self.script)
         self.assertIn("issues/new?", self.script)
+
+    def test_pages_deployment_enables_pages_and_publishes_the_landing_artifact(self):
+        workflow = PAGES_WORKFLOW.read_text()
+        self.assertIn("pages: write", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("actions/configure-pages@v5", workflow)
+        self.assertIn("enablement: true", workflow)
+        self.assertIn("actions/upload-pages-artifact@v3", workflow)
+        self.assertIn("path: docs/landing", workflow)
+        self.assertIn("actions/deploy-pages@v4", workflow)
 
 
 if __name__ == "__main__":
