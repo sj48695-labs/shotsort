@@ -34,6 +34,7 @@ class BuildAppContractTests(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         self.assertIn("packaging/entitlements.plist", self.script)
         self.assertIn("codesign --verify --deep --strict --verbose=2", self.script)
+        self.assertIn('NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")', self.script)
 
     def test_unsigned_build_is_explicitly_not_for_distribution(self):
         self.assertIn("무서명 빌드", self.script)
@@ -56,6 +57,13 @@ class BuildAppContractTests(unittest.TestCase):
         self.assertIn(".venv/bin/pip install -q -r requirements.txt", workflow)
         self.assertIn("base64 -D", workflow)
         self.assertNotIn("base64 --decode", workflow)
+
+    def test_release_keeps_notary_credentials_in_the_temporary_keychain(self):
+        workflow = RELEASE_WORKFLOW.read_text()
+        self.assertIn('store-credentials "$NOTARY_PROFILE"', workflow)
+        self.assertIn('--keychain "$RELEASE_KEYCHAIN"', workflow)
+        self.assertIn('NOTARY_KEYCHAIN: ${{ runner.temp }}/shotsort-signing.keychain-db', workflow)
+        self.assertIn('security delete-keychain "$RUNNER_TEMP/shotsort-signing.keychain-db"', workflow)
 
     def test_smoke_validates_the_stapled_dmg_before_copying_the_app(self):
         smoke = SMOKE_SCRIPT.read_text()
