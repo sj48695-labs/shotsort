@@ -26,13 +26,14 @@ def cmd_scan(args):
     if not root.exists():
         sys.exit(f"경로 없음: {root}")
 
-    use_llm = engine.resolve_mode(args.local)
-    if not use_llm:
-        reason = "--local 지정" if args.local else "ANTHROPIC_API_KEY 없음"
-        print(f"⚠️  {reason} → 로컬 휴리스틱 모드(OCR + 규칙, Claude 미사용).")
-        print("    무료·오프라인. 정확도는 낮음. 키 설정 후 다시 `scan` 하면 자동으로 LLM 분류로 업그레이드됩니다.\n")
-
-    mode = f"모델: {args.model}" if use_llm else "로컬 휴리스틱"
+    provider = args.provider
+    if args.local:
+        provider = "local"
+    elif provider is None:
+        provider = "anthropic" if engine.has_api_key() else "local"
+    if provider == "local":
+        print("로컬 분석: 외부 전송 없이 OCR + 프로젝트 규칙 + 화면 특징을 사용합니다.\n")
+    mode = f"{provider} API · 모델: {args.model or '(환경변수)'}" if provider != "local" else "로컬 분석"
 
     printed = False
 
@@ -50,7 +51,7 @@ def cmd_scan(args):
     hints = [h for h in (args.projects or "").split(",") if h.strip()]
     res = engine.scan_images(
         root,
-        use_llm=use_llm,
+        provider=provider,
         model=args.model,
         with_image=args.with_image,
         force=args.force,
@@ -186,8 +187,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("scan", help="이미지 분석(캐시되지 않은 것만)")
     sp.add_argument("path", nargs="?", default=str(DEFAULT_SCAN_DIR), help=f"스캔 경로 (기본 {DEFAULT_SCAN_DIR})")
-    sp.add_argument("--model", default=DEFAULT_MODEL, help=f"분류 모델 (기본 {DEFAULT_MODEL}; 비용절감: claude-haiku-4-5)")
-    sp.add_argument("--with-image", action="store_true", help="OCR 텍스트와 함께 축소 썸네일도 Claude 에 전달(정확도↑ 비용↑)")
+    sp.add_argument("--provider", choices=["local", "anthropic", "openai", "xai"],
+                    help="분류 방식 (기본: API 키가 있으면 anthropic, 아니면 local)")
+    sp.add_argument("--model", help=f"API 모델명 (Anthropic 기본 {DEFAULT_MODEL}; 다른 공급자는 필수)")
+    sp.add_argument("--with-image", action="store_true", help="OCR 텍스트와 함께 축소 이미지를 선택한 API에 전송")
     sp.add_argument("--local", action="store_true", help="API 키가 있어도 로컬 휴리스틱 모드 강제(무료/오프라인)")
     sp.add_argument("--force", action="store_true", help="캐시 무시하고 전부 재분석")
     sp.add_argument("--projects", help="알려진 프로젝트명(쉼표 구분). OCR 에 이 단어가 있으면 해당 프로젝트로 묶음. 예: act-server,hitc,zipath")

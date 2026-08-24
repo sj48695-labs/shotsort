@@ -19,6 +19,12 @@ if [ ! -d .venv ]; then
   echo "설치 완료."
 fi
 
+# requirements가 업데이트된 기존 설치도 자동 보완한다.
+if ! .venv/bin/python3 -c 'import anthropic, nicegui, openai, PIL' >/dev/null 2>&1; then
+  echo "업데이트된 의존성 설치 중…"
+  .venv/bin/pip install -q -r requirements.txt
+fi
+
 # 'cli' 로 시작하면 CLI, 아니면 앱
 if [ "${1:-}" = "cli" ]; then
   shift

@@ -7,6 +7,11 @@ from unittest.mock import patch
 
 import engine
 
+try:
+    from PIL import Image, ImageDraw
+except ImportError:  # pragma: no cover - Pillow is an application dependency
+    Image = ImageDraw = None
+
 
 def add_image(conn, path, *, text="", project="unknown", kind="ui", grp=None,
               manual=0, deletable=0):
@@ -173,6 +178,51 @@ class SavedProjectsTest(unittest.TestCase):
         engine.save_project("act-server", ["gitlab.com/acme/act"])
         engine.consolidate_all(conn=self.conn, use_llm=False, paths=[only])
         self.assertEqual(self.conn.execute("SELECT grp FROM images").fetchone()[0], "act-server")
+
+    @unittest.skipIf(Image is None, "Pillow unavailable")
+    def test_visual_layout_strengthens_weak_ocr_relationship(self):
+        paths = []
+        for name, footer in (("a.png", "deploy staging branch"),
+                             ("b.png", "review feature request"),
+                             ("c.png", "release version notes")):
+            path = self.root / name
+            image = Image.new("RGB", (120, 90), "#f7f7f7")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((0, 0, 119, 17), fill="#e87824")
+            draw.rectangle((8, 28, 90, 48), fill="#ef9a55")
+            draw.rectangle((30, 57, 111, 77), fill="#f2ad75")
+            image.save(path)
+            paths.append(path)
+            add_image(self.conn, path, text=f"workspace {footer}", project="workspace", kind="chat")
+        items = [dict(r) for r in self.conn.execute(
+            "SELECT rowid AS id, path, project, kind, summary, ocr_text, deletable FROM images")]
+        mapping = engine.consolidate_local(items)
+        self.assertEqual(len(set(mapping.values())), 1)
+        self.assertEqual(next(iter(mapping.values())), "workspace")
+
+    @unittest.skipIf(Image is None, "Pillow unavailable")
+    def test_common_colour_alone_does_not_group_unrelated_images(self):
+        for index, text in enumerate(("alpha deploy", "bravo invoice", "charlie diagram")):
+            path = self.root / f"orange-{index}.png"
+            Image.new("RGB", (80, 80), "#e87824").save(path)
+            add_image(self.conn, path, text=text, project=text, kind="ui")
+        items = [dict(r) for r in self.conn.execute(
+            "SELECT rowid AS id, path, project, kind, summary, ocr_text, deletable FROM images")]
+        mapping = engine.consolidate_local(items)
+        self.assertTrue(all(group == "화면" for group in mapping.values()))
+
+    @unittest.skipIf(Image is None, "Pillow unavailable")
+    def test_orange_chat_characteristic_can_match_locally(self):
+        path = self.root / "conversation.png"
+        image = Image.new("RGB", (120, 90), "#fafafa")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((0, 0, 119, 20), fill="#e87520")
+        draw.rectangle((8, 30, 105, 62), fill="#ef8a3b")
+        image.save(path)
+        add_image(self.conn, path, text="메시지 대화", project="unknown", kind="chat")
+        engine.save_project("act", [], characteristics="주황색 대화방 형태")
+        engine.apply_saved_projects(conn=self.conn, paths=[path])
+        self.assertEqual(self.conn.execute("SELECT grp FROM images").fetchone()[0], "act")
 
 
 if __name__ == "__main__":

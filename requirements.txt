@@ -1,4 +1,6 @@
 anthropic>=0.49
+# OpenAI Responses API 및 xAI의 OpenAI 호환 API
+openai>=1.68
 # 로컬 OCR (macOS Vision) — 무료/오프라인, 권장
 pyobjc-framework-Vision; sys_platform == "darwin"
 pyobjc-framework-Quartz; sys_platform == "darwin"

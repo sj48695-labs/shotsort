@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import providers
+
 HOME = Path.home()
 STATE_DIR = HOME / ".shotsort"
 DB_PATH = STATE_DIR / "cache.db"
@@ -319,6 +321,39 @@ def classify_image(
     return json.loads(out)
 
 
+def classify_with_provider(
+    adapter: providers.StructuredProvider,
+    ocr_text: str,
+    image_path: Path,
+    with_image: bool,
+    project_rules: list[dict] | None = None,
+) -> dict:
+    """공급자 공통 인터페이스로 한 이미지를 분류한다."""
+    image_b64 = media = None
+    if with_image:
+        image_b64, media = _downscaled_b64(image_path)
+    text = ocr_text.strip() or "(OCR 텍스트 없음 - 이미지/사진일 가능성)"
+    prompt = f"파일명: {image_path.name}\n\nOCR 텍스트:\n{text[:6000]}"
+    if project_rules:
+        descriptions = []
+        for rule in project_rules:
+            aliases = ", ".join(rule.get("aliases") or []) or "없음"
+            line = f'- {rule["name"]} (별칭: {aliases})'
+            if image_b64 and rule.get("characteristics"):
+                line += f'; 이미지에서 확인할 특징: {rule["characteristics"]}'
+            descriptions.append(line)
+        prompt += ("\n\n저장된 프로젝트 후보입니다. 근거가 맞을 때 project를 정확한 "
+                   "프로젝트명으로 반환하세요:\n" + "\n".join(descriptions))
+    return adapter.generate_json(
+        system=PER_IMAGE_SYSTEM,
+        prompt=prompt,
+        schema=PER_IMAGE_SCHEMA,
+        image_b64=image_b64,
+        image_media_type=media or "image/jpeg",
+        max_tokens=600,
+    )
+
+
 def _downscaled_b64(path: Path, max_edge: int = 1024):
     try:
         from PIL import Image
@@ -407,6 +442,32 @@ def consolidate_groups(
     return {a["id"]: a["group"] for a in data["assignments"]}
 
 
+def consolidate_with_provider(
+    adapter: providers.StructuredProvider,
+    items: list[dict],
+    project_rules: list[dict] | None = None,
+) -> dict[int, str]:
+    listing = "\n".join(
+        f'{it["id"]}: project="{it["project"]}", kind={it["kind"]}, summary="{it["summary"]}"'
+        for it in items
+    )
+    system = (
+        "여러 스크린샷의 1차 분류 결과를 보고 비슷한 것끼리 일관된 그룹명을 부여하라. "
+        "잡다한 삭제 후보는 '정리(삭제후보)'로 모으고 그룹 수는 대략 4~12개로 유지하라."
+    )
+    if project_rules:
+        system += " 저장된 프로젝트 후보와 맞으면 정확한 이름을 사용하라: " + ", ".join(
+            rule["name"] for rule in project_rules
+        )
+    data = adapter.generate_json(
+        system=system,
+        prompt=f"스크린샷 목록:\n{listing}",
+        schema=CONSOLIDATE_SCHEMA,
+        max_tokens=4000,
+    )
+    return {a["id"]: a["group"] for a in data["assignments"]}
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 로컬 폴백 (ANTHROPIC_API_KEY 없을 때) — OCR + 휴리스틱, Claude 미사용
 #   무료·오프라인. 정확도는 LLM 모드보다 낮지만, OCR 텍스트 기반으로
@@ -460,6 +521,42 @@ def _looks_named(s: str) -> bool:
     return bool(_re.search(r"[a-z]{3,}", s or "") or _re.search(r"[가-힣]{2,}", s or ""))
 
 
+def _visual_descriptor(path: str | Path) -> tuple[tuple[float, ...], float] | None:
+    """작은 로컬 시각 특징: 3x3 밝기 배치와 주황색 픽셀 비율.
+
+    얼굴/내용 인식이나 임베딩은 하지 않는다. Pillow가 없거나 파일을 읽지 못하면 OCR만
+    사용하는 기존 동작으로 자연스럽게 폴백한다.
+    """
+    try:
+        from PIL import Image, ImageStat
+        image = Image.open(path).convert("RGB").resize((48, 48))
+    except Exception:
+        return None
+    cells: list[float] = []
+    for y in range(3):
+        for x in range(3):
+            box = (x * 16, y * 16, (x + 1) * 16, (y + 1) * 16)
+            red, green, blue = ImageStat.Stat(image.crop(box)).mean
+            cells.append((0.299 * red + 0.587 * green + 0.114 * blue) / 255)
+    orange = 0
+    get_pixels = getattr(image, "get_flattened_data", image.getdata)
+    pixels = list(get_pixels())
+    for red, green, blue in pixels:
+        # 넓은 orange 범위. 갈색/회색은 채도와 채널 차이로 제외한다.
+        if red >= 150 and 55 <= green <= 190 and blue <= 125 and red - blue >= 65:
+            orange += 1
+    return tuple(cells), orange / len(pixels)
+
+
+def _visual_similarity(a: tuple[tuple[float, ...], float] | None,
+                       b: tuple[tuple[float, ...], float] | None) -> float:
+    """레이아웃 밝기 유사도. 색상 비율 자체는 그룹 병합 점수로 쓰지 않는다."""
+    if not a or not b:
+        return 0.0
+    mean_error = sum(abs(x - y) for x, y in zip(a[0], b[0])) / len(a[0])
+    return max(0.0, 1.0 - mean_error)
+
+
 # 종류 → 싱글톤/미분류 흡수용 한국어 라벨
 _KIND_LABEL = {
     "error": "에러", "receipt": "영수증", "code": "코드", "chat": "메시지",
@@ -510,7 +607,7 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
     docs = []
     for it in items:
         blob = f"{it.get('project','')} {it.get('summary','')} {(it.get('ocr_text') or '')[:1500]}"
-        docs.append((it["id"], _tokens(blob), it))
+        docs.append((it["id"], _tokens(blob), it, _visual_descriptor(it.get("path", ""))))
 
     parent = {d[0]: d[0] for d in docs}
 
@@ -532,12 +629,20 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
                 continue
             tj = docs[j][1]
             inter = len(ti & tj)
-            if inter and inter / len(ti | tj) >= 0.3:
+            lexical = inter / len(ti | tj) if inter else 0.0
+            # 시각 특징은 약한 텍스트 관계를 보강할 뿐이다. 공유 OCR 토큰이 없으면
+            # 같은 주황색/밝기라는 이유만으로 합치지 않는다.
+            visually_supported = (
+                inter >= 1 and lexical >= 0.12
+                and docs[i][2].get("kind") == docs[j][2].get("kind")
+                and _visual_similarity(docs[i][3], docs[j][3]) >= 0.88
+            )
+            if lexical >= 0.3 or visually_supported:
                 parent[find(docs[i][0])] = find(docs[j][0])
 
     clusters: dict[int, list] = {}
-    for did, toks, it in docs:
-        clusters.setdefault(find(did), []).append((did, toks, it))
+    for did, toks, it, visual in docs:
+        clusters.setdefault(find(did), []).append((did, toks, it, visual))
 
     def cluster_name(members: list) -> str:
         projects = [m[2].get("project", "") for m in members
@@ -545,7 +650,7 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
         if projects:
             return (max(projects, key=_name_score)[:30]) or "기타"
         tok_counter: Counter = Counter()
-        for _, toks, _it in members:
+        for _, toks, _it, _visual in members:
             tok_counter.update(toks)
         return tok_counter.most_common(1)[0][0] if tok_counter else "기타"
 
@@ -565,7 +670,7 @@ def consolidate_local(items: list[dict]) -> dict[int, str]:
             for i in ids:
                 mapping[i] = name[:30]
         else:
-            for did, _toks, it in members:
+            for did, _toks, it, _visual in members:
                 mapping[did] = _KIND_LABEL.get(it.get("kind"), "기타")
     return mapping
 
@@ -623,8 +728,9 @@ ItemCallback = Callable[[int, int, Path, "dict | None", "Exception | None"], Non
 def scan_images(
     root: Path,
     *,
-    use_llm: bool,
-    model: str = DEFAULT_MODEL,
+    use_llm: bool | None = None,
+    provider: str | None = None,
+    model: str | None = None,
     with_image: bool = False,
     force: bool = False,
     consolidate: bool = True,
@@ -632,15 +738,21 @@ def scan_images(
     on_item: ItemCallback | None = None,
 ) -> ScanResult:
     """이미지를 분석해 DB 에 저장하고(캐시되지 않은 것만), 2차 그룹 정규화까지 수행."""
-    res = ScanResult(used_llm=use_llm)
+    if provider is None:
+        provider = "anthropic" if use_llm else "local"
+    # 기존 Claude 호출은 모델 기본값을 유지하고, 다른 공급자는 명시 선택을 요구한다.
+    selected_model = model or (DEFAULT_MODEL if provider in {"anthropic", "claude"} else None)
+    config = providers.resolve_config(provider, selected_model)
+    adapter = providers.create_provider(config)
+    remote = adapter is not None
+    res = ScanResult(used_llm=remote)
     imgs = find_images(root)
     res.total = len(imgs)
     if not imgs:
         return res
 
     conn = db()
-    client = get_client() if use_llm else None
-    project_rules = resolve_project_rules(conn) if use_llm else []
+    project_rules = resolve_project_rules(conn) if remote else []
 
     for i, path in enumerate(imgs, 1):
         sp = str(path)
@@ -655,8 +767,8 @@ def scan_images(
 
         text = ocr(path)
         try:
-            tag = (classify_image(client, model, text, path, with_image, project_rules)
-                   if use_llm else classify_local(text, path))
+            tag = (classify_with_provider(adapter, text, path, with_image, project_rules)
+                   if adapter else classify_local(text, path))
         except Exception as e:
             res.errors.append((path.name, str(e)))
             if on_item:
@@ -682,7 +794,8 @@ def scan_images(
     if consolidate:
         try:
             consolidate_all(
-                conn=conn, use_llm=use_llm, project_hints=project_hints, paths=imgs
+                conn=conn, use_llm=remote, provider_adapter=adapter,
+                project_hints=project_hints, paths=imgs
             )
         except Exception as e:
             res.consolidate_error = str(e)
@@ -693,6 +806,7 @@ def consolidate_all(
     conn: sqlite3.Connection | None = None,
     *,
     use_llm: bool,
+    provider_adapter: providers.StructuredProvider | None = None,
     project_hints: list[str] | None = None,
     paths: list[str | Path] | None = None,
     root: str | Path | None = None,
@@ -708,8 +822,12 @@ def consolidate_all(
         return 0
     items = [dict(r) for r in rows]
     project_rules = resolve_project_rules(conn) if use_llm else []
-    mapping = (consolidate_groups(get_client(), items, project_rules) if use_llm
-               else consolidate_local(items))
+    if provider_adapter:
+        mapping = consolidate_with_provider(provider_adapter, items, project_rules)
+    elif use_llm:  # 기존 직접 호출 호환
+        mapping = consolidate_groups(get_client(), items, project_rules)
+    else:
+        mapping = consolidate_local(items)
     for rid, grp in mapping.items():
         conn.execute("UPDATE images SET grp=? WHERE rowid=?", (grp, rid))
     conn.commit()
@@ -788,19 +906,29 @@ def apply_saved_projects(
     """활성 저장 프로젝트(이름+별칭)를 해당 범위의 자동 그룹에 적용한다."""
     conn = conn or db()
     rows = conn.execute(
-        "SELECT name, aliases FROM saved_projects WHERE enabled=1"
+        "SELECT name, aliases, characteristics FROM saved_projects WHERE enabled=1"
     ).fetchall()
     rules: list[tuple[str, str]] = []
     for row in rows:
-        rules.extend((row["name"], term) for term in [row["name"], *json.loads(row["aliases"])] if term)
+        aliases = json.loads(row["aliases"])
+        # 짧은 영문 프로젝트명(예: act)은 일반 문장에 너무 자주 등장한다.
+        # 이름 자체는 4자 이상일 때만 텍스트 규칙으로 쓰고, 짧은 이름은 구체적 별칭/시각 특징으로 판별한다.
+        name = row["name"]
+        name_is_specific = bool(_re.search(r"[가-힣]{2,}", name) or len(name) >= 4)
+        terms = ([name] if name_is_specific else []) + aliases
+        rules.extend((name, term) for term in terms if term)
     rules.sort(key=lambda rule: len(rule[1]), reverse=True)
     patterns = [
         # 파일명의 '-'도 자연스러운 단어 구분자로 취급하되 영숫자 내부는 매칭하지 않는다.
         (name, _re.compile(rf"(?<!\w){_re.escape(term)}(?!\w)", _re.I))
         for name, term in rules
     ]
+    characteristic_rules = [
+        (row["name"], row["characteristics"].casefold())
+        for row in rows if (row["characteristics"] or "").strip()
+    ]
     image_rows = conn.execute(
-        """SELECT rowid AS id, path, project, summary, ocr_text FROM images
+        """SELECT rowid AS id, path, project, kind, summary, ocr_text FROM images
            WHERE COALESCE(manual_group, 0)=0"""
     ).fetchall()
     moved = 0
@@ -814,6 +942,21 @@ def apply_saved_projects(
                 conn.execute("UPDATE images SET grp=? WHERE rowid=?", (name, row["id"]))
                 moved += 1
                 break
+        else:
+            descriptor = _visual_descriptor(row["path"])
+            for name, characteristic in characteristic_rules:
+                # 현재 지원하는 보수적 로컬 해석: '주황색' + '대화/대화방' 규칙.
+                # 색상만으로는 절대 매칭하지 않고 OCR로 판별된 chat 종류가 함께 필요하다.
+                orange_chat = (
+                    "주황" in characteristic
+                    and ("대화" in characteristic or "채팅" in characteristic)
+                    and row["kind"] == "chat"
+                    and descriptor is not None and descriptor[1] >= 0.18
+                )
+                if orange_chat:
+                    conn.execute("UPDATE images SET grp=? WHERE rowid=?", (name, row["id"]))
+                    moved += 1
+                    break
     conn.commit()
     return moved
 

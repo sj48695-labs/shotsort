@@ -51,13 +51,25 @@ def index():
         ui.button("나중에", on_click=lambda: update_banner.set_visibility(False)).props("flat dense")
 
     # ── 스캔 컨트롤 ──────────────────────────────────────────────────────────
-    has_key = engine.has_api_key()
     with ui.card().classes("w-full"):
         with ui.row().classes("items-center gap-3 w-full"):
             path_in = ui.input("스캔 경로", value=str(engine.DEFAULT_SCAN_DIR)).classes("grow")
-            local_sw = ui.switch("로컬 모드(무료)", value=not has_key)
-            img_sw = ui.switch("썸네일도 전송", value=False)
             scan_btn = ui.button("스캔", icon="search")
+        with ui.row().classes("items-start gap-3 w-full"):
+            provider_in = ui.select(
+                {
+                    "local": "내 Mac에서만 분석",
+                    "anthropic": "Claude API",
+                    "openai": "OpenAI API (Codex 계열 포함)",
+                    "xai": "xAI Grok API",
+                },
+                value="local",
+                label="분류 방식",
+            ).classes("w-64")
+            model_in = ui.input(
+                "모델명", placeholder="API에서 사용할 모델명을 입력"
+            ).classes("grow")
+            img_sw = ui.switch("이미지 내용도 AI로 분석", value=False)
         ui.separator()
         with ui.row().classes("items-center gap-3 w-full"):
             with ui.column().classes("gap-0 grow"):
@@ -70,16 +82,26 @@ def index():
         mode_lbl = ui.label().classes("text-xs text-gray-500")
 
         def refresh_mode():
-            use_llm = engine.resolve_mode(local_sw.value)
-            if use_llm:
-                mode_lbl.text = "모드: Claude 분류 (claude-opus-4-8). '썸네일도 전송' 켜면 정확도↑ 비용↑."
+            provider = provider_in.value
+            if provider != "local":
+                names = {"anthropic": "Claude", "openai": "OpenAI", "xai": "Grok"}
+                key_names = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                             "xai": "XAI_API_KEY"}
+                mode_lbl.text = (
+                    f"{names[provider]} API 사용 · OCR 텍스트가 전송됩니다. 이미지 분석을 켜면 "
+                    f"축소 이미지도 전송됩니다. 환경변수: {key_names[provider]}"
+                )
+                model_in.enable()
                 img_sw.enable()
             else:
-                why = "로컬 강제" if local_sw.value else "ANTHROPIC_API_KEY 없음"
-                mode_lbl.text = f"모드: 로컬 휴리스틱 ({why}) — 무료·오프라인, 정확도는 낮음."
+                mode_lbl.text = (
+                    "외부 전송 없음 · OCR, 프로젝트 규칙, 색상과 화면 배치를 함께 비교합니다. "
+                    "API 없이도 동작합니다."
+                )
+                model_in.disable()
                 img_sw.disable()
 
-        local_sw.on_value_change(lambda _: refresh_mode())
+        provider_in.on_value_change(lambda _: refresh_mode())
         refresh_mode()
         prog_lbl = ui.label().classes("text-xs text-primary")
 
@@ -265,7 +287,11 @@ def index():
         if not root.exists():
             ui.notify(f"경로 없음: {root}", type="negative")
             return
-        use_llm = engine.resolve_mode(local_sw.value)
+        provider = provider_in.value
+        model = (model_in.value or "").strip() or None
+        if provider != "local" and not model and provider != "anthropic":
+            ui.notify("선택한 API의 모델명을 입력하세요.", type="warning")
+            return
         scan_btn.props("loading")
         scan_btn.disable()
         progress.update(i=0, total=0, running=True)
@@ -274,7 +300,8 @@ def index():
             res = await run.io_bound(
                 engine.scan_images,
                 root,
-                use_llm=use_llm,
+                provider=provider,
+                model=model,
                 with_image=img_sw.value,
                 on_item=on_scan_item,
             )
