@@ -70,6 +70,21 @@ class SimilarityCommandTests(unittest.TestCase):
         self.assertIn("검사 실패", rendered)
         self.assertIn("읽기 실패", rendered)
 
+    def test_renders_exact_group_distinctly(self):
+        group = engine.DuplicateGroup(
+            "exact",
+            (self.keeper, self.other),
+            self.keeper,
+            (
+                engine.MemberSimilarity(self.keeper, 0, 100.0),
+                engine.MemberSimilarity(self.other, 0, 100.0),
+            ),
+        )
+        with patch("builtins.print") as output:
+            cli._render_similarity_groups([group])
+
+        self.assertIn("[1] exact", str(output.call_args_list[0].args[0]))
+
     def test_only_explicit_non_keeper_selection_is_trashed_once(self):
         args = self.args("--delete", "1:2", "-y")
         with patch.object(engine, "find_images", return_value=[self.keeper_path, self.other_path]), patch.object(
@@ -95,6 +110,15 @@ class SimilarityCommandTests(unittest.TestCase):
             cli.cmd_similarity(self.args("--delete", "1"))
 
         self.assertTrue(any("GROUP:NUMBER" in str(call.args[0]) for call in output.call_args_list))
+        trash.assert_not_called()
+
+    def test_duplicate_delete_selection_is_rejected_without_trashing(self):
+        with patch.object(engine, "find_images", return_value=[]), patch.object(
+            engine, "find_duplicate_groups", return_value=engine.DuplicateDetectionResult([self.group])
+        ), patch.object(engine, "trash") as trash, patch("sys.stderr") as stderr:
+            cli.cmd_similarity(self.args("--delete", "1:2", "--delete", "1:2", "-y"))
+
+        self.assertIn("중복된 삭제 선택", stderr.write.call_args_list[0].args[0])
         trash.assert_not_called()
 
     def test_trash_runtime_error_is_printed_to_stderr(self):
