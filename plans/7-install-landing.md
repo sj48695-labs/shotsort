@@ -2,6 +2,9 @@
 
 ## 조사 결과
 
+- 2026-08-26 운영 재검증: 공개 Pages API가 `404 Not Found`이고 `https://sj48695-labs.github.io/shotsort/`도 HTTP 404다. 마지막 `Deploy landing page` 실행(`32788215746`, 2026-08-24)은 `actions/configure-pages@v5` 단계에서 실패했다. Pages site를 만들거나 Actions Pages를 허용할 권한/정책을 관리자가 정비한 뒤 workflow를 다시 실행해야 한다.
+- 2026-08-26 운영 재검증: 최신 공개 Release는 `v0.1.1`(2026-06-15)이며 `shotsort.dmg`만 있고 `shotsort.dmg.sha256` asset은 없다. 따라서 notarized/stapled DMG와 clean-user Gatekeeper smoke의 공개 증거가 없으며 P4의 공개 문구는 계속 "준비 중"으로 유지한다.
+- 현재 `docs/landing`에는 실제 앱 스크린샷 asset이 없다. P2 커밋 태그가 있어도 실제 앱을 샘플 데이터로 실행해 개인정보를 마스킹한 캡처를 추가하기 전에는 이 완료 기준을 충족한 것으로 간주하지 않는다.
 - 기준 브랜치/커밋은 `7-install-landing`의 `cebb920`이며, 이미 Developer ID 서명, notarytool, DMG checksum/smoke, 랜딩의 기본 구조가 들어 있다.
 - 이슈 #7은 열려 있다. 완료 기준은 Gatekeeper 경고 없는 최신 DMG, clean macOS 설치, 최신 릴리스로의 1-click 이동, 처리 경계 설명, 다운로드/피드백의 최소 신호다.
 - `Deploy landing page` run `32788215746`은 `actions/configure-pages@v5`에서 Pages site 404로 실패했다. GitHub Pages가 아직 활성화되지 않은 것이 원인이다.
