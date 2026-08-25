@@ -180,6 +180,39 @@ def validate_config(config: ProviderConfig) -> None:
         raise ValueError(f"{key_name}가 설정되지 않았습니다")
 
 
+def list_api_models(config: ProviderConfig, client: Any = None) -> list[str]:
+    """현재 API 키로 조회 가능한 모델 ID만 반환한다."""
+    if config.provider not in {"anthropic", "openai", "xai"}:
+        return []
+    if not config.api_key:
+        key_name = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
+                    "xai": "XAI_API_KEY"}[config.provider]
+        raise ValueError(f"{key_name}가 설정되지 않았습니다")
+    if client is None:
+        if config.provider == "anthropic":
+            try:
+                import anthropic
+            except ImportError as exc:
+                raise RuntimeError("anthropic SDK가 필요합니다") from exc
+            kwargs = {"api_key": config.api_key, "timeout": 5}
+            if config.base_url:
+                kwargs["base_url"] = config.base_url
+            client = anthropic.Anthropic(**kwargs)
+        else:
+            try:
+                from openai import OpenAI
+            except ImportError as exc:
+                raise RuntimeError("openai SDK가 필요합니다") from exc
+            kwargs = {"api_key": config.api_key, "timeout": 5}
+            if config.base_url:
+                kwargs["base_url"] = config.base_url
+            client = OpenAI(**kwargs)
+    page = client.models.list(limit=100) if config.provider == "anthropic" else client.models.list()
+    entries = getattr(page, "data", page.get("data", []) if isinstance(page, dict) else [])
+    return sorted({item.get("id") if isinstance(item, dict) else getattr(item, "id", None)
+                   for item in entries} - {None})
+
+
 def probe_codex_cli(*, runner: Any = subprocess.run) -> ProviderCapability:
     """Check only Codex's read-only login state; never start a paid request."""
     try:

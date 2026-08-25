@@ -117,6 +117,15 @@ class CodexCliProviderTest(unittest.TestCase):
 
 
 class ProviderCallTest(unittest.TestCase):
+    def test_api_model_list_returns_sorted_ids(self):
+        client = SimpleNamespace(models=SimpleNamespace(
+            list=lambda: SimpleNamespace(data=[SimpleNamespace(id="z"), SimpleNamespace(id="a")])
+        ))
+        models = providers.list_api_models(
+            providers.ProviderConfig("openai", api_key="key"), client
+        )
+        self.assertEqual(models, ["a", "z"])
+
     def test_anthropic_structured_call_with_image(self):
         seen = {}
         class Messages:
