@@ -64,9 +64,11 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 
 ```bash
 ./run.sh cli scan                      # ~/Desktop 분석 (캐시된 건 스킵)
-./run.sh cli scan ~/Pictures --with-image
-./run.sh cli scan --provider openai --model <모델명> --with-image
-./run.sh cli scan --provider xai --model <모델명> --with-image
+./run.sh cli scan ~/Pictures --provider local
+./run.sh cli scan --provider auto       # Codex CLI → 동의된 API → local
+./run.sh cli scan --provider cli        # 검증된 Codex CLI만, 불가하면 local
+./run.sh cli scan --provider api --direct-provider openai --model <모델명> --allow-api-transfer
+./run.sh cli scan --provider direct --direct-provider xai --model <모델명> --with-image --allow-api-transfer
 ./run.sh cli groups                    # 프로젝트별 그룹
 ./run.sh cli projects add act-server --aliases "act server,github.com/acme/act-server"
 ./run.sh cli projects list             # 저장 프로젝트 확인
@@ -83,6 +85,13 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 ```
 
 (`shotsort.py` 는 `cli.py` 의 하위호환 shim 이라 `python shotsort.py scan ...` 도 동일하게 동작합니다.)
+
+`--provider`는 `auto`, `cli`, `api`, `direct`, `local`을 지원합니다. 이전의
+`--provider openai` 같은 공급자명은 `direct`의 호환 단축값입니다. API를 쓰는
+비대화식 실행은 매번 `--allow-api-transfer`가 필요합니다. 이 플래그가 없으면 API
+후보·키가 있어도 호출하지 않고 로컬 분석으로 fallback합니다. 시작과 종료에는 실제
+provider/method/model, 외부 전송 여부, 모델 목록 cache 상태와 fallback 사유만 출력하며,
+키·Bearer 토큰 등 비밀 값은 마스킹합니다.
 
 `similarity` 출력은 `exact`(완전히 같은 파일) 또는 `유사` 그룹별로 보존 후보, 구성원 번호, 보존 후보 기준 유사도와 파일 크기를 보여줍니다. 검사는 파일을 바꾸지 않습니다. 삭제하려면 반드시 `--delete GROUP:NUMBER`로 **보존 후보가 아닌** 구성원을 지정해야 하며, 지정하지 않은 파일과 보존 후보는 자동 삭제되지 않습니다. 실행 전에는 y/N 확인이 나오고 `-y`로만 생략할 수 있습니다.
 
