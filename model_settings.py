@@ -18,7 +18,7 @@ class ModelSettings:
     with_image: bool = False
 
 
-def model_settings_controls(default_claude_model: str) -> ModelSettings:
+def model_settings_controls(default_claude_model: str, *, on_change=None) -> ModelSettings:
     settings = ModelSettings()
     ui.add_css('''
         .model-settings-card :focus-visible { box-shadow: 0 0 0 3px var(--q-primary) !important; }
@@ -170,6 +170,8 @@ def model_settings_controls(default_claude_model: str) -> ModelSettings:
                 "스캔 시 OCR 텍스트만 전송" if config.is_remote else "계정 없이 사용 · 외부 전송 없음"
             )
             dialog.close()
+            if on_change:
+                on_change()
             ui.notify("다음 스캔에 사용할 모델을 설정했습니다.", type="positive")
 
         with ui.row().classes("w-full justify-end gap-2"):
