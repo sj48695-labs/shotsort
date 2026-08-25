@@ -38,6 +38,15 @@ class ExecutionPolicyTest(unittest.TestCase):
             api_consent=True, cli_capability=capability)
         self.assertEqual(plan.method, providers.ExecutionMethod.CODEX_CLI)
         self.assertEqual(plan.status.provider, "codex")
+
+    def test_auto_does_not_pass_anthropic_default_model_to_codex(self):
+        capability = providers.ProviderCapability.codex_cli(available=True, logged_in=True)
+        plan = providers.resolve_execution(
+            "auto", providers.ProviderConfig("anthropic", None, "key"),
+            api_consent=True, cli_capability=capability,
+        )
+        self.assertEqual(plan.method, providers.ExecutionMethod.CODEX_CLI)
+        self.assertEqual(plan.status.model, "gpt-5")
         self.assertTrue(plan.status.external_transfer)
 
     def test_auto_uses_only_consented_api_then_local(self):
@@ -67,11 +76,22 @@ class CodexCliProviderTest(unittest.TestCase):
         calls = []
         def runner(command, **kwargs):
             calls.append((command, kwargs))
+            if command[1:] == ["exec", "--help"]:
+                return SimpleNamespace(returncode=0, stdout="--image FILE --output-schema FILE", stderr="")
             return SimpleNamespace(returncode=0, stdout="Logged in", stderr="")
 
         capability = providers.probe_codex_cli(runner=runner)
         self.assertTrue(capability.ready)
-        self.assertEqual(calls[0][0], ["codex", "login", "status"])
+        self.assertEqual(calls[0][0], ["codex", "exec", "--help"])
+        self.assertEqual(calls[1][0], ["codex", "login", "status"])
+
+    def test_capability_probe_rejects_cli_without_image_or_schema_flags(self):
+        def runner(command, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="--output-schema FILE", stderr="")
+
+        capability = providers.probe_codex_cli(runner=runner)
+        self.assertFalse(capability.ready)
+        self.assertIn("이미지 입력", capability.reason)
 
     def test_cli_runs_read_only_ephemeral_with_image_schema_and_parses_json(self):
         seen = {}
