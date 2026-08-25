@@ -123,7 +123,11 @@ def index():
         def selected_config():
             if mode_in.value == "direct":
                 return model_settings.config
-            return providers.resolve_config(provider_in.value, selected_model())
+            model = selected_model() or (
+                engine.DEFAULT_MODEL if provider_in.value == "anthropic"
+                and mode_in.value not in {"auto", "cli"} else None
+            )
+            return providers.resolve_config(provider_in.value, model)
 
         def selected_with_image() -> bool:
             return model_settings.with_image if mode_in.value == "direct" else img_sw.value
