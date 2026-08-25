@@ -1191,8 +1191,14 @@ def scan_images(
     legacy_provider = provider is not None
     if provider is None:
         provider = "anthropic" if use_llm else "local"
-    # 기존 Claude 호출은 모델 기본값을 유지하고, 다른 공급자는 명시 선택을 요구한다.
-    selected_model = model or (DEFAULT_MODEL if provider in {"anthropic", "claude"} else None)
+    # 자동/CLI 모드에서는 Codex 어댑터가 자체 검증 기본 모델을 선택해야 한다.
+    # Anthropic 기본 모델은 CLI 후보가 제외된 뒤 API 경로에서만 보완한다.
+    requested_mode = providers.AnalysisMode(analysis_mode) if analysis_mode else None
+    selected_model = model or (
+        DEFAULT_MODEL if provider in {"anthropic", "claude"}
+        and requested_mode not in {providers.AnalysisMode.AUTO, providers.AnalysisMode.CLI}
+        else None
+    )
     config = providers.resolve_config(provider, selected_model)
     # Explicit legacy API selection remains compatible, while new mode-based
     # callers must provide (or persist) transfer consent.
@@ -1204,13 +1210,27 @@ def scan_images(
     mode = analysis_mode or (providers.AnalysisMode.DIRECT if legacy_remote_request and config.is_remote
                              else providers.AnalysisMode.LOCAL)
     plan = providers.resolve_execution(mode, config, api_consent=consent)
-    adapter = providers.create_provider(plan.config)
     remote = plan.method != providers.ExecutionMethod.LOCAL
     res = ScanResult(used_llm=remote, actual_provider=plan.status.provider,
                      actual_method=plan.method, actual_model=plan.status.model,
                      actual_mode=plan.method.value,
                      external_transfer=plan.status.external_transfer,
                      fallback_reason=plan.status.fallback_reason)
+    try:
+        adapter = providers.create_provider(plan.config)
+    except Exception as error:
+        # SDK 미설치·잘못된 인증 설정처럼 요청 전 초기화가 실패한 경우에도
+        # 외부 분석 불가가 전체 스캔 실패로 이어지면 안 된다.
+        reason = providers.mask_secret(f"{classify_provider_error(error)}: {error}")
+        adapter = None
+        remote = False
+        res.used_llm = False
+        res.actual_provider = "local"
+        res.actual_method = providers.ExecutionMethod.LOCAL
+        res.actual_mode = providers.ExecutionMethod.LOCAL.value
+        res.actual_model = None
+        res.external_transfer = False
+        res.fallback_reason = reason
     imgs = find_images(root)
     res.total = len(imgs)
     if not imgs:

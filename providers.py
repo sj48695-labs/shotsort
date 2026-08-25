@@ -181,16 +181,39 @@ def validate_config(config: ProviderConfig) -> None:
 
 
 def probe_codex_cli(*, runner: Any = subprocess.run) -> ProviderCapability:
-    """Check only Codex's read-only login state; never start a paid request."""
+    """비용이 드는 요청 없이 Codex CLI의 실행 계약과 로그인 상태를 확인한다."""
     try:
-        result = runner(["codex", "login", "status"], capture_output=True,
-                        text=True, timeout=5, check=False)
+        help_result = runner(["codex", "exec", "--help"], capture_output=True,
+                             text=True, timeout=5, check=False)
     except FileNotFoundError:
         return ProviderCapability.codex_cli(available=False, reason="Codex CLI가 설치되지 않았습니다")
     except subprocess.TimeoutExpired:
-        return ProviderCapability.codex_cli(available=True, reason="Codex CLI 로그인 확인 시간이 초과되었습니다")
+        return ProviderCapability.codex_cli(available=True, reason="Codex CLI 기능 확인 시간이 초과되었습니다")
     except OSError as exc:
         return ProviderCapability.codex_cli(available=False, reason=mask_secret(exc))
+    if help_result.returncode != 0:
+        detail = mask_secret(help_result.stderr or help_result.stdout)
+        return ProviderCapability.codex_cli(available=True, reason=detail or "Codex CLI 기능을 확인할 수 없습니다")
+    help_text = f"{help_result.stdout}\n{help_result.stderr}"
+    missing = []
+    if "--image" not in help_text:
+        missing.append("이미지 입력")
+    if "--output-schema" not in help_text:
+        missing.append("구조화 출력")
+    if missing:
+        return ProviderCapability.codex_cli(
+            available=True,
+            supports_images="이미지 입력" not in missing,
+            supports_structured_output="구조화 출력" not in missing,
+            reason=f"Codex CLI가 {' 및 '.join(missing)}을 지원하지 않습니다",
+        )
+    try:
+        result = runner(["codex", "login", "status"], capture_output=True,
+                        text=True, timeout=5, check=False)
+    except subprocess.TimeoutExpired:
+        return ProviderCapability.codex_cli(available=True, reason="Codex CLI 로그인 확인 시간이 초과되었습니다")
+    except OSError as exc:
+        return ProviderCapability.codex_cli(available=True, reason=mask_secret(exc))
     if result.returncode != 0:
         detail = mask_secret(result.stderr or result.stdout)
         return ProviderCapability.codex_cli(available=True, reason=detail or "Codex CLI에 로그인하지 않았습니다")
@@ -233,6 +256,14 @@ def resolve_execution(mode: AnalysisMode | str = AnalysisMode.AUTO,
         return _local_plan((capability.reason if capability else None) or "Codex CLI를 사용할 수 없습니다")
 
     wants_api = selected_mode in (AnalysisMode.AUTO, AnalysisMode.API, AnalysisMode.DIRECT)
+    # 자동 모드에서 API 공급자의 기본 모델명을 Codex CLI에 넘기면 안 된다.
+    # CLI 경로가 제외된 뒤에만 기존 Anthropic 기본값을 적용해 API fallback도
+    # 모델명을 직접 입력하지 않고 사용할 수 있게 한다.
+    if wants_api and selected_config.provider == "anthropic" and not selected_config.model:
+        selected_config = ProviderConfig(
+            selected_config.provider, "claude-opus-4-8", selected_config.api_key,
+            selected_config.base_url,
+        )
     if wants_api and selected_config.is_remote and api_consent:
         try:
             validate_config(selected_config)
