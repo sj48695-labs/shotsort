@@ -181,16 +181,39 @@ def validate_config(config: ProviderConfig) -> None:
 
 
 def probe_codex_cli(*, runner: Any = subprocess.run) -> ProviderCapability:
-    """Check only Codex's read-only login state; never start a paid request."""
+    """비용이 드는 요청 없이 Codex CLI의 실행 계약과 로그인 상태를 확인한다."""
     try:
-        result = runner(["codex", "login", "status"], capture_output=True,
-                        text=True, timeout=5, check=False)
+        help_result = runner(["codex", "exec", "--help"], capture_output=True,
+                             text=True, timeout=5, check=False)
     except FileNotFoundError:
         return ProviderCapability.codex_cli(available=False, reason="Codex CLI가 설치되지 않았습니다")
     except subprocess.TimeoutExpired:
-        return ProviderCapability.codex_cli(available=True, reason="Codex CLI 로그인 확인 시간이 초과되었습니다")
+        return ProviderCapability.codex_cli(available=True, reason="Codex CLI 기능 확인 시간이 초과되었습니다")
     except OSError as exc:
         return ProviderCapability.codex_cli(available=False, reason=mask_secret(exc))
+    if help_result.returncode != 0:
+        detail = mask_secret(help_result.stderr or help_result.stdout)
+        return ProviderCapability.codex_cli(available=True, reason=detail or "Codex CLI 기능을 확인할 수 없습니다")
+    help_text = f"{help_result.stdout}\n{help_result.stderr}"
+    missing = []
+    if "--image" not in help_text:
+        missing.append("이미지 입력")
+    if "--output-schema" not in help_text:
+        missing.append("구조화 출력")
+    if missing:
+        return ProviderCapability.codex_cli(
+            available=True,
+            supports_images="이미지 입력" not in missing,
+            supports_structured_output="구조화 출력" not in missing,
+            reason=f"Codex CLI가 {' 및 '.join(missing)}을 지원하지 않습니다",
+        )
+    try:
+        result = runner(["codex", "login", "status"], capture_output=True,
+                        text=True, timeout=5, check=False)
+    except subprocess.TimeoutExpired:
+        return ProviderCapability.codex_cli(available=True, reason="Codex CLI 로그인 확인 시간이 초과되었습니다")
+    except OSError as exc:
+        return ProviderCapability.codex_cli(available=True, reason=mask_secret(exc))
     if result.returncode != 0:
         detail = mask_secret(result.stderr or result.stdout)
         return ProviderCapability.codex_cli(available=True, reason=detail or "Codex CLI에 로그인하지 않았습니다")

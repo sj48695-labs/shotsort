@@ -80,6 +80,17 @@ class AIRuntimeTest(unittest.TestCase):
         self.assertFalse(result.external_transfer)
         self.assertEqual(result.new, 1)
 
+    def test_adapter_initialization_failure_falls_back_to_local_before_transfer(self):
+        plan = self.plan(providers.ExecutionMethod.API, "openai")
+        with patch.object(engine.providers, "resolve_execution", return_value=plan), \
+             patch.object(engine.providers, "create_provider", side_effect=RuntimeError("SDK missing")), \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(self.root, provider="openai", model="model", api_consent=True)
+        self.assertEqual(result.actual_provider, "local")
+        self.assertFalse(result.external_transfer)
+        self.assertIn("provider_error", result.fallback_reason)
+        self.assertEqual(result.new, 1)
+
     def test_error_classes_are_safe_and_distinct(self):
         self.assertEqual(engine.classify_provider_error(providers.ExecutionTimeout("x")), "timeout")
         self.assertEqual(engine.classify_provider_error(providers.AuthenticationError("x")), "authentication")

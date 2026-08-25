@@ -126,7 +126,8 @@ def index():
             model_select.set_options(options)
             capability = (providers.probe_codex_cli()
                           if mode in {"auto", "cli"} else None)
-            config = providers.resolve_config(provider, model)
+            execution_model = model or (engine.DEFAULT_MODEL if provider == "anthropic" else None)
+            config = providers.resolve_config(provider, execution_model)
             consent = engine.has_api_consent(provider, with_image=img_sw.value)
             plan = providers.resolve_execution(
                 mode, config, api_consent=consent, cli_capability=capability,
@@ -405,7 +406,8 @@ def index():
         mode = mode_in.value
         provider = provider_in.value
         model = selected_model()
-        config = providers.resolve_config(provider, model)
+        execution_model = model or (engine.DEFAULT_MODEL if provider == "anthropic" else None)
+        config = providers.resolve_config(provider, execution_model)
         capability = providers.probe_codex_cli() if mode in {"auto", "cli"} else None
         consent = engine.has_api_consent(provider, with_image=img_sw.value)
         possible_api = providers.resolve_execution(

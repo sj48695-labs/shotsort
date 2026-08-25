@@ -1204,13 +1204,27 @@ def scan_images(
     mode = analysis_mode or (providers.AnalysisMode.DIRECT if legacy_remote_request and config.is_remote
                              else providers.AnalysisMode.LOCAL)
     plan = providers.resolve_execution(mode, config, api_consent=consent)
-    adapter = providers.create_provider(plan.config)
     remote = plan.method != providers.ExecutionMethod.LOCAL
     res = ScanResult(used_llm=remote, actual_provider=plan.status.provider,
                      actual_method=plan.method, actual_model=plan.status.model,
                      actual_mode=plan.method.value,
                      external_transfer=plan.status.external_transfer,
                      fallback_reason=plan.status.fallback_reason)
+    try:
+        adapter = providers.create_provider(plan.config)
+    except Exception as error:
+        # SDK 미설치·잘못된 인증 설정처럼 요청 전 초기화가 실패한 경우에도
+        # 외부 분석 불가가 전체 스캔 실패로 이어지면 안 된다.
+        reason = providers.mask_secret(f"{classify_provider_error(error)}: {error}")
+        adapter = None
+        remote = False
+        res.used_llm = False
+        res.actual_provider = "local"
+        res.actual_method = providers.ExecutionMethod.LOCAL
+        res.actual_mode = providers.ExecutionMethod.LOCAL.value
+        res.actual_model = None
+        res.external_transfer = False
+        res.fallback_reason = reason
     imgs = find_images(root)
     res.total = len(imgs)
     if not imgs:

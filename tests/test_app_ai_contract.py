@@ -43,6 +43,10 @@ class AppAiContractTests(unittest.TestCase):
         self.assertIn("저장된 모델을 찾을 수 없습니다", self.source)
         self.assertIn("confirm_missing_saved_model", self.source)
 
+    def test_automatic_anthropic_model_is_used_for_api_consent_preflight(self):
+        self.assertIn('execution_model = model or (engine.DEFAULT_MODEL if provider == "anthropic" else None)',
+                      self.source)
+
 
 if __name__ == "__main__":
     unittest.main()
