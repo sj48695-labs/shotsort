@@ -38,7 +38,7 @@
 - `README.md`, `docs/landing/app.js`, `tests/test_landing_contract.py`에서 허용되지 않은 `feedback` label 요구를 제거했다.
 - P1은 구현 완료일 뿐, 실제 Pages deployment 성공은 아래 P3의 운영 검증 전까지 완료로 판정하지 않는다.
 
-### P2 — 실제 앱 스크린샷을 설치 전 랜딩에 추가
+### P2 (완료) — 실제 앱 스크린샷을 설치 전 랜딩에 추가
 
 변경 파일(최대 4개):
 
@@ -54,6 +54,8 @@
 3. `python -m unittest tests.test_landing_contract -v`와 `python -m unittest discover -s tests -v`를 통과시킨다.
 
 커밋: `feat: [P2] #7 실제 앱 데모를 설치 랜딩에 추가`
+
+완료 증거: 분리된 임시 홈 디렉터리에서 샘플 이미지 4장을 로컬 OCR로 스캔하고, 분류된 그룹·그룹 폴더 정리·선택 항목 휴지통 UI가 보이는 실제 앱 화면을 `docs/landing/assets/shotsort-demo.png`으로 캡처했다. 개인 파일, OCR 텍스트, API 키는 포함하지 않았다.
 
 ### P3 — 이미 구현된 Pages 경로의 실제 배포 검증
 
