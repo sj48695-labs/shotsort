@@ -24,6 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+          # 처음 Pages 사이트를 만들 때만 관리 권한이 있는 토큰이 필요하다.
+          # 이후 배포에서는 기본 GITHUB_TOKEN으로 계속 동작한다.
+          token: ${{ secrets.PAGES_SETUP_TOKEN || github.token }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: docs/landing
