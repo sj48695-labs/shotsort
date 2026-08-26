@@ -19,6 +19,7 @@ from typing import Any, Mapping
 
 
 PROVIDERS = ("local", "anthropic", "openai", "xai")
+CLI_PROVIDERS = ("codex", "claude")
 
 
 class AnalysisMode(str, Enum):
@@ -32,6 +33,7 @@ class AnalysisMode(str, Enum):
 class ExecutionMethod(str, Enum):
     LOCAL = "local"
     CODEX_CLI = "codex_cli"
+    CLAUDE_CLI = "claude_cli"
     API = "api"
 
 
@@ -68,6 +70,10 @@ class ProviderCapability:
         return (self.available and self.logged_in and self.supports_images
                 and self.supports_structured_output)
 
+    def ready_for(self, *, with_image: bool) -> bool:
+        return (self.available and self.logged_in and self.supports_structured_output
+                and (not with_image or self.supports_images))
+
     @classmethod
     def codex_cli(cls, *, available: bool, logged_in: bool = False,
                   supports_images: bool = True,
@@ -75,6 +81,12 @@ class ProviderCapability:
                   reason: str | None = None) -> "ProviderCapability":
         return cls(available, logged_in, supports_images,
                    supports_structured_output, reason)
+
+    @classmethod
+    def claude_cli(cls, *, available: bool, logged_in: bool = False,
+                   supports_structured_output: bool = True,
+                   reason: str | None = None) -> "ProviderCapability":
+        return cls(available, logged_in, False, supports_structured_output, reason)
 
 
 @dataclass(frozen=True)
@@ -220,6 +232,57 @@ def probe_codex_cli(*, runner: Any = subprocess.run) -> ProviderCapability:
     return ProviderCapability.codex_cli(available=True, logged_in=True)
 
 
+def probe_claude_cli(*, runner: Any = subprocess.run) -> ProviderCapability:
+    """Check Claude Code's non-interactive structured-output contract safely.
+
+    Claude Code currently has no local image attachment option.  It remains a
+    valid OCR-text-only adapter, but is never selected when image transfer is
+    requested.
+    """
+    try:
+        help_result = runner(["claude", "--help"], capture_output=True, text=True,
+                             timeout=5, check=False)
+    except FileNotFoundError:
+        return ProviderCapability.claude_cli(available=False, reason="Claude CLI가 설치되지 않았습니다")
+    except subprocess.TimeoutExpired:
+        return ProviderCapability.claude_cli(available=True, reason="Claude CLI 기능 확인 시간이 초과되었습니다")
+    except OSError as exc:
+        return ProviderCapability.claude_cli(available=False, reason=mask_secret(exc))
+    if help_result.returncode != 0:
+        detail = mask_secret(help_result.stderr or help_result.stdout)
+        return ProviderCapability.claude_cli(available=True, reason=detail or "Claude CLI 기능을 확인할 수 없습니다")
+    help_text = f"{help_result.stdout}\n{help_result.stderr}"
+    missing = [flag for flag in ("-p", "--json-schema", "--output-format") if flag not in help_text]
+    if missing:
+        return ProviderCapability.claude_cli(
+            available=True, supports_structured_output=False,
+            reason=f"Claude CLI가 {', '.join(missing)}을 지원하지 않습니다",
+        )
+    try:
+        result = runner(["claude", "auth", "status"], capture_output=True, text=True,
+                        timeout=5, check=False)
+    except subprocess.TimeoutExpired:
+        return ProviderCapability.claude_cli(available=True, reason="Claude CLI 로그인 확인 시간이 초과되었습니다")
+    except OSError as exc:
+        return ProviderCapability.claude_cli(available=True, reason=mask_secret(exc))
+    if result.returncode != 0:
+        detail = mask_secret(result.stderr or result.stdout)
+        return ProviderCapability.claude_cli(available=True, reason=detail or "Claude CLI에 로그인하지 않았습니다")
+    try:
+        logged_in = bool(json.loads(result.stdout).get("loggedIn"))
+    except (TypeError, json.JSONDecodeError):
+        logged_in = "logged" in (result.stdout or "").lower()
+    if not logged_in:
+        return ProviderCapability.claude_cli(available=True, reason="Claude CLI에 로그인하지 않았습니다")
+    return ProviderCapability.claude_cli(available=True, logged_in=True)
+
+
+def probe_cli_capabilities(*, runner: Any = subprocess.run) -> dict[str, ProviderCapability]:
+    """Return safe capability facts for every supported CLI, without AI calls."""
+    return {"codex": probe_codex_cli(runner=runner),
+            "claude": probe_claude_cli(runner=runner)}
+
+
 def _local_plan(reason: str | None = None) -> ExecutionPlan:
     config = ProviderConfig("local")
     return ExecutionPlan(ExecutionMethod.LOCAL, config,
@@ -232,6 +295,8 @@ def resolve_execution(mode: AnalysisMode | str = AnalysisMode.AUTO,
                       config: ProviderConfig | None = None, *,
                       api_consent: bool = False,
                       cli_capability: ProviderCapability | None = None,
+                      cli_capabilities: Mapping[str, ProviderCapability] | None = None,
+                      with_image: bool = False,
                       runner: Any = subprocess.run) -> ExecutionPlan:
     """Choose exactly one safe execution route.
 
@@ -244,16 +309,31 @@ def resolve_execution(mode: AnalysisMode | str = AnalysisMode.AUTO,
     if selected_mode == AnalysisMode.LOCAL:
         return _local_plan()
 
-    capability = cli_capability
-    if selected_mode in (AnalysisMode.AUTO, AnalysisMode.CLI) and capability is None:
-        capability = probe_codex_cli(runner=runner)
-    if selected_mode in (AnalysisMode.AUTO, AnalysisMode.CLI) and capability and capability.ready:
+    capabilities = dict(cli_capabilities or {})
+    if cli_capability is not None:  # P1 caller compatibility.
+        capabilities.setdefault("codex", cli_capability)
+    if selected_mode in (AnalysisMode.AUTO, AnalysisMode.CLI) and "codex" not in capabilities:
+        capabilities["codex"] = probe_codex_cli(runner=runner)
+    capability = capabilities.get("codex")
+    if selected_mode in (AnalysisMode.AUTO, AnalysisMode.CLI) and capability and capability.ready_for(with_image=with_image):
         cli_config = ProviderConfig("codex", selected_config.model or "gpt-5")
         status = ExecutionStatus("codex", ExecutionMethod.CODEX_CLI, cli_config.model,
                                  external_transfer=True)
         return ExecutionPlan(ExecutionMethod.CODEX_CLI, cli_config, status, capability)
+    if (selected_mode in (AnalysisMode.AUTO, AnalysisMode.CLI)
+            and cli_capability is None and "claude" not in capabilities):
+        capabilities["claude"] = probe_claude_cli(runner=runner)
+    claude_capability = capabilities.get("claude")
+    if selected_mode in (AnalysisMode.AUTO, AnalysisMode.CLI) and claude_capability and claude_capability.ready_for(with_image=with_image):
+        cli_config = ProviderConfig("claude")
+        status = ExecutionStatus("claude", ExecutionMethod.CLAUDE_CLI,
+                                 external_transfer=True)
+        return ExecutionPlan(ExecutionMethod.CLAUDE_CLI, cli_config, status, claude_capability)
     if selected_mode == AnalysisMode.CLI:
-        return _local_plan((capability.reason if capability else None) or "Codex CLI를 사용할 수 없습니다")
+        reasons = [item.reason for item in capabilities.values() if item and item.reason]
+        if with_image and claude_capability and not claude_capability.supports_images:
+            reasons.append("Claude CLI는 이미지 입력을 지원하지 않습니다")
+        return _local_plan("; ".join(reasons) or "사용 가능한 AI CLI가 없습니다")
 
     wants_api = selected_mode in (AnalysisMode.AUTO, AnalysisMode.API, AnalysisMode.DIRECT)
     # 자동 모드에서 API 공급자의 기본 모델명을 Codex CLI에 넘기면 안 된다.
@@ -273,8 +353,15 @@ def resolve_execution(mode: AnalysisMode | str = AnalysisMode.AUTO,
                                  selected_config.model, external_transfer=True)
         return ExecutionPlan(ExecutionMethod.API, selected_config, status, capability)
     if wants_api and selected_config.is_remote and not api_consent:
-        return _local_plan("API 외부 전송 동의가 없어 로컬 분석을 사용합니다")
-    reason = capability.reason if capability and selected_mode == AnalysisMode.AUTO else None
+        reasons = [item.reason for item in capabilities.values() if item and item.reason]
+        if with_image and claude_capability and not claude_capability.supports_images:
+            reasons.append("Claude CLI는 이미지 입력을 지원하지 않습니다")
+        reasons.append("API 외부 전송 동의가 없어 로컬 분석을 사용합니다")
+        return _local_plan("; ".join(reasons))
+    reasons = [item.reason for item in capabilities.values() if item and item.reason]
+    if with_image and claude_capability and not claude_capability.supports_images:
+        reasons.append("Claude CLI는 이미지 입력을 지원하지 않습니다")
+    reason = "; ".join(reasons) if selected_mode == AnalysisMode.AUTO else None
     return _local_plan(reason)
 
 
@@ -353,6 +440,56 @@ class CodexCliProvider(StructuredProvider):
                     Path(path).unlink(missing_ok=True)
                 except OSError:
                     pass
+
+
+class ClaudeCliProvider(StructuredProvider):
+    """Claude Code adapter for OCR-text-only structured classification."""
+
+    def __init__(self, config: ProviderConfig, *, runner: Any = subprocess.run,
+                 timeout: float = 60):
+        if config.provider != "claude":
+            raise ValueError("Claude CLI 설정의 provider는 claude여야 합니다")
+        self.config = config
+        self.runner = runner
+        self.timeout = timeout
+
+    def generate_json(self, *, system, prompt, schema, image_b64=None,
+                      image_media_type="image/jpeg", max_tokens=1000):
+        del image_media_type, max_tokens
+        if image_b64:
+            raise CapabilityError("Claude CLI는 로컬 이미지 입력을 지원하지 않습니다")
+        command = ["claude", "-p", "--output-format", "json", "--json-schema",
+                   json.dumps(schema, ensure_ascii=False), "--no-session-persistence",
+                   "--tools", ""]
+        if self.config.model:
+            command.extend(["--model", self.config.model])
+        command.append(f"{system}\n\n{prompt}")
+        try:
+            result = self.runner(command, capture_output=True, text=True,
+                                 timeout=self.timeout, check=False)
+        except FileNotFoundError as exc:
+            raise CapabilityError("Claude CLI가 설치되지 않았습니다") from exc
+        except subprocess.TimeoutExpired as exc:
+            detail = mask_secret(getattr(exc, "stderr", ""))
+            suffix = f": {detail}" if detail else ""
+            raise ExecutionTimeout(f"Claude CLI 실행 시간이 초과되었습니다{suffix}") from exc
+        except OSError as exc:
+            raise ProviderError(mask_secret(exc)) from exc
+        if result.returncode != 0:
+            detail = mask_secret(result.stderr or result.stdout)
+            error_type = AuthenticationError if "auth" in detail.lower() or "login" in detail.lower() else ProviderError
+            raise error_type(f"Claude CLI 실행에 실패했습니다: {detail or 'unknown error'}")
+        try:
+            parsed = json.loads(result.stdout)
+            if isinstance(parsed, dict) and isinstance(parsed.get("result"), str):
+                parsed = json.loads(parsed["result"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            detail = mask_secret(result.stderr)
+            suffix = f": {detail}" if detail else ""
+            raise StructuredOutputError(f"Claude CLI가 구조화된 JSON을 반환하지 않았습니다{suffix}") from exc
+        if not isinstance(parsed, dict):
+            raise StructuredOutputError("Claude CLI 결과 JSON은 객체여야 합니다")
+        return parsed
 
 
 class AnthropicProvider(StructuredProvider):
@@ -448,6 +585,10 @@ def create_provider(config: ProviderConfig, client: Any = None) -> StructuredPro
         if client is not None:
             raise ValueError("Codex CLI는 SDK client를 받지 않습니다")
         return CodexCliProvider(config)
+    if config.provider == "claude":
+        if client is not None:
+            raise ValueError("Claude CLI는 SDK client를 받지 않습니다")
+        return ClaudeCliProvider(config)
     if config.provider == "anthropic":
         return AnthropicProvider(config, client)
     if config.provider == "xai":

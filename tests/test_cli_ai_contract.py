@@ -65,6 +65,10 @@ class CliAiContractTest(unittest.TestCase):
                 self.assertEqual(scan.call_args.kwargs["analysis_mode"], "direct")
                 self.assertEqual(scan.call_args.kwargs["provider"], "openai")
 
+    def test_scan_help_describes_claude_text_fallback(self):
+        scan_parser = cli.build_parser()._subparsers._group_actions[0].choices["scan"]
+        self.assertIn("Claude CLI(텍스트)", scan_parser.format_help())
+
     def test_status_output_uses_actual_result_and_masks_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
             args = self.parse(directory, "--provider", "auto")

@@ -33,9 +33,9 @@ from preview_layout import (
 
 GROUP_PAGE_SIZE = 24
 ANALYSIS_MODE_OPTIONS = {
-    "auto": "자동 (Codex CLI → 동의한 API → 로컬)",
+    "auto": "자동 (Codex CLI → Claude CLI(텍스트) → 동의한 API → 로컬)",
     "local": "로컬 분석만 (외부 전송 없음)",
-    "cli": "Codex CLI",
+    "cli": "설치된 Codex/Claude CLI",
     "api": "설치된 API Key 사용",
     "direct": "직접 설정 (고급)",
 }
@@ -124,8 +124,8 @@ def index():
             if catalog:
                 options.update({name: name for name in catalog["models"]})
             model_select.set_options(options)
-            capability = (providers.probe_codex_cli()
-                          if mode in {"auto", "cli"} else None)
+            capabilities = (providers.probe_cli_capabilities()
+                            if mode in {"auto", "cli"} else None)
             execution_model = model or (
                 engine.DEFAULT_MODEL if provider == "anthropic" and mode not in {"auto", "cli"}
                 else None
@@ -133,21 +133,26 @@ def index():
             config = providers.resolve_config(provider, execution_model)
             consent = engine.has_api_consent(provider, with_image=img_sw.value)
             plan = providers.resolve_execution(
-                mode, config, api_consent=consent, cli_capability=capability,
+                mode, config, api_consent=consent, cli_capabilities=capabilities,
+                with_image=img_sw.value,
             )
             status = engine.keychain_status(provider)
             route = f"선택 예정: {plan.status.provider} / {plan.status.method.value}"
             if plan.status.model:
                 route += f" / {plan.status.model}"
             transfer = "외부 전송 있음" if plan.status.external_transfer else "외부 전송 없음"
-            detail = plan.status.fallback_reason or (capability.reason if capability else None)
+            capability_detail = "; ".join(
+                f"{name}: {item.reason}" for name, item in (capabilities or {}).items()
+                if item.reason
+            )
+            detail = plan.status.fallback_reason or capability_detail
             cache = (f"모델 목록: 캐시 {len(catalog['models'])}개"
                      if catalog else "모델 목록: 캐시 없음 · 자동 추천 사용")
             if catalog and catalog["stale"]:
                 cache += " (24시간 경과)"
             mode_lbl.text = f"{route} · {transfer} · {cache} · Keychain/환경변수 상태: {status}"
             if detail:
-                mode_lbl.text += f" · Codex CLI: {providers.mask_secret(detail)}"
+                mode_lbl.text += f" · CLI 상태: {providers.mask_secret(detail)}"
 
             saved = ai_settings.get("analysis_model")
             missing = bool(saved and catalog and saved not in catalog["models"])
@@ -414,10 +419,11 @@ def index():
             else None
         )
         config = providers.resolve_config(provider, execution_model)
-        capability = providers.probe_codex_cli() if mode in {"auto", "cli"} else None
+        capabilities = providers.probe_cli_capabilities() if mode in {"auto", "cli"} else None
         consent = engine.has_api_consent(provider, with_image=img_sw.value)
         possible_api = providers.resolve_execution(
-            mode, config, api_consent=True, cli_capability=capability,
+            mode, config, api_consent=True, cli_capabilities=capabilities,
+            with_image=img_sw.value,
         )
         if possible_api.method == providers.ExecutionMethod.API and not consent:
             if not await request_api_consent():

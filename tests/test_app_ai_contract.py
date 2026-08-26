@@ -18,7 +18,8 @@ class AppAiContractTests(unittest.TestCase):
 
     def test_refresh_explains_the_selected_route_and_catalog(self):
         for marker in (
-            "providers.probe_codex_cli",
+            "providers.probe_cli_capabilities",
+            "Claude CLI",
             "providers.resolve_execution",
             "actual_provider",
             "actual_method",

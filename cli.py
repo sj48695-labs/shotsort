@@ -327,7 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("path", nargs="?", default=str(DEFAULT_SCAN_DIR), help=f"스캔 경로 (기본 {DEFAULT_SCAN_DIR})")
     sp.add_argument("--provider", default="auto",
                     choices=["auto", "cli", "api", "direct", "local", "anthropic", "openai", "xai"],
-                    help="분석 방식 (auto: Codex CLI → 동의된 API → local; 기존 공급자명은 direct 단축값)")
+                    help="분석 방식 (auto: Codex CLI → Claude CLI(텍스트) → 동의된 API → local; 기존 공급자명은 direct 단축값)")
     sp.add_argument("--direct-provider", choices=["anthropic", "openai", "xai"],
                     help="api/direct에 사용할 API 공급자 (기본: SHOTSORT_AI_PROVIDER 또는 anthropic)")
     sp.add_argument("--model", help=f"API/CLI 모델명 (Anthropic 기본 {DEFAULT_MODEL}; 다른 API는 필수)")

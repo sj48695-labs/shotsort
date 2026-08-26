@@ -63,6 +63,28 @@ class ExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(consented.method, providers.ExecutionMethod.API)
         self.assertEqual(consented.status.provider, "openai")
 
+    def test_auto_uses_verified_claude_after_codex_for_text_only_analysis(self):
+        codex_missing = providers.ProviderCapability.codex_cli(available=False)
+        claude_ready = providers.ProviderCapability.claude_cli(available=True, logged_in=True)
+        plan = providers.resolve_execution(
+            "auto", providers.ProviderConfig("anthropic", "api-model", "key"),
+            cli_capabilities={"codex": codex_missing, "claude": claude_ready},
+        )
+        self.assertEqual(plan.method, providers.ExecutionMethod.CLAUDE_CLI)
+        self.assertEqual(plan.status.provider, "claude")
+        self.assertIsNone(plan.status.model)
+
+    def test_auto_skips_claude_when_image_transfer_is_requested(self):
+        codex_missing = providers.ProviderCapability.codex_cli(available=False)
+        claude_ready = providers.ProviderCapability.claude_cli(available=True, logged_in=True)
+        plan = providers.resolve_execution(
+            "auto", providers.ProviderConfig("anthropic", "api-model", "key"),
+            with_image=True,
+            cli_capabilities={"codex": codex_missing, "claude": claude_ready},
+        )
+        self.assertEqual(plan.method, providers.ExecutionMethod.LOCAL)
+        self.assertIn("이미지", plan.status.fallback_reason)
+
     def test_api_mode_never_selects_a_different_paid_provider(self):
         plan = providers.resolve_execution(
             "api", providers.ProviderConfig("anthropic", "claude-test", "key"),
@@ -81,7 +103,7 @@ class CodexCliProviderTest(unittest.TestCase):
             return SimpleNamespace(returncode=0, stdout="Logged in", stderr="")
 
         capability = providers.probe_codex_cli(runner=runner)
-        self.assertTrue(capability.ready)
+        self.assertTrue(capability.ready_for(with_image=False))
         self.assertEqual(calls[0][0], ["codex", "exec", "--help"])
         self.assertEqual(calls[1][0], ["codex", "login", "status"])
 
@@ -131,6 +153,41 @@ class CodexCliProviderTest(unittest.TestCase):
         self.assertNotIn("secret-token", masked)
         self.assertNotIn("abcdefghijkl", masked)
         self.assertIn("OPENAI_API_KEY=***", masked)
+
+
+class ClaudeCliProviderTest(unittest.TestCase):
+    def test_capability_probe_requires_print_schema_json_and_login(self):
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            if command == ["claude", "--help"]:
+                return SimpleNamespace(returncode=0, stdout="-p --json-schema --output-format", stderr="")
+            return SimpleNamespace(returncode=0, stdout='{"loggedIn": true}', stderr="")
+
+        capability = providers.probe_claude_cli(runner=runner)
+        self.assertTrue(capability.ready_for(with_image=False))
+        self.assertFalse(capability.supports_images)
+        self.assertEqual(calls, [["claude", "--help"], ["claude", "auth", "status"]])
+
+    def test_cli_uses_noninteractive_schema_and_unwraps_json_result(self):
+        seen = {}
+        def runner(command, **kwargs):
+            seen.update(command=command, kwargs=kwargs)
+            return SimpleNamespace(returncode=0, stdout='{"result":"{\\"project\\": \\"act\\"}"}', stderr="")
+
+        adapter = providers.ClaudeCliProvider(providers.ProviderConfig("claude"), runner=runner)
+        result = adapter.generate_json(system="system", prompt="classify", schema={"type": "object"})
+        self.assertEqual(result, {"project": "act"})
+        self.assertIn("-p", seen["command"])
+        self.assertIn("--json-schema", seen["command"])
+        self.assertIn("--output-format", seen["command"])
+        self.assertIn("--no-session-persistence", seen["command"])
+        self.assertIn("--tools", seen["command"])
+
+    def test_cli_refuses_images_and_masks_errors(self):
+        adapter = providers.ClaudeCliProvider(providers.ProviderConfig("claude"))
+        with self.assertRaises(providers.CapabilityError):
+            adapter.generate_json(system="s", prompt="p", schema={"type": "object"}, image_b64="aGVsbG8=")
 
 
 class ProviderCallTest(unittest.TestCase):
