@@ -23,7 +23,7 @@
 ## 확정할 제품 정책
 
 - 분석 방식은 `auto`, `local`, `cli`, `api`, `direct` 다섯 개의 명시 값으로 둔다. `direct`는 기존 공급자/API base URL/모델을 사용자가 고르는 고급 설정이며, API Key 자체는 선택한 API 방식과 동일한 동의 규칙을 따른다.
-- `auto`는 **검증된 Codex CLI → 동의가 이미 저장된 API Key → local** 순서다. CLI 사용도 OCR 텍스트와 선택된 이미지가 OpenAI 서비스로 전송될 수 있으므로 외부 전송으로 표시하되, CLI에는 별도의 API fallback 동의를 요구하지 않는다. API는 공급자별 저장 동의가 없으면 후보로만 보이고 실행하지 않는다.
+- `auto`는 **검증된 Codex CLI → 검증된 Claude CLI(텍스트 전용) → 동의가 이미 저장된 API Key → local** 순서다. CLI 사용은 외부 전송으로 표시하되, CLI에는 별도의 API fallback 동의를 요구하지 않는다. Claude CLI는 검증된 로컬 이미지 첨부 계약이 없어 이미지 전송을 요청하면 후보에서 제외한다. API는 공급자별 저장 동의가 없으면 후보로만 보이고 실행하지 않는다.
 - API 동의는 `provider + image 포함 여부` 단위로 앱 설정에 저장한다. 이미지 여부가 바뀌면 다시 동의한다. CLI/API 실패 뒤에는 다른 유료 API를 자동 호출하지 않고 local로만 fallback한다.
 - API Key는 값이 아니라 상태만 저장/표시한다. 사용자가 입력한 키는 macOS Keychain에만 보관하고, Keychain을 쓸 수 없는 환경에서는 환경변수만 읽는 상태로 제한한다. 예외/상태/CLI 출력에서 `sk-…`, Bearer 값, 환경변수 값은 마스킹한다.
 - 모델 목록은 `provider + execution mode` 키로 마지막 성공 목록, 조회 시각, 원본(조회/검증 기본값)을 SQLite에 저장하고 앱 시작 시 및 마지막 성공 후 24시간이 지났을 때 갱신한다. Codex CLI처럼 지원 목록 API가 없는 경우 검증된 기본 모델과 직접 입력을 함께 제공한다. 저장 모델이 목록에서 사라지면 자동 추천으로 되돌리기 전 UI에서 경고하고 사용자의 확인을 받는다.
@@ -32,7 +32,7 @@
 
 - #4, #1은 같은 배치의 형제 이슈이므로 이 계획에서 해당 UI/기능을 수정하지 않는다.
 - CLI 설치/로그인 자동화, API Key 자동 발급, 요금 계산, AI 결과 자동 확정은 구현하지 않는다.
-- Codex CLI가 유일한 첫 지원 CLI다. Claude CLI adapter, 임의 CLI 탐색, 모델명을 추측해 지원 처리하는 작업은 하지 않는다.
+- 임의 CLI 탐색과 모델명을 추측해 지원 처리하는 작업은 하지 않는다. 지원 CLI는 검증된 Codex와 Claude Code로 한정하며, Claude는 OCR 텍스트 전용이다.
 - worktree/branch 삭제·전환·정리와 후속 완료 절차는 수행하지 않는다.
 
 ## 구현 phases
@@ -99,6 +99,20 @@
 3. `rg -n '(sk-|Bearer |OPENAI_API_KEY=|ANTHROPIC_API_KEY=|XAI_API_KEY=)' providers.py engine.py app.py cli.py tests`로 비밀값을 출력/fixture에 넣는 변경이 없는지 점검한다.
 
 커밋: `feat: [P4] #11 AI 분석 CLI fallback 상태 표시`
+
+### P5 (완료) — Claude CLI 우선 실행 보완
+
+- [`providers.py`](../providers.py): 검증된 Claude Code의 `-p`, `--json-schema`, JSON 출력 및 `auth status` 계약을 adapter로 구현한다. 이미지 입력을 요구하면 지원하지 않는 Claude CLI를 후보에서 제외하고, OCR 텍스트 전용 자동 모드에서는 Codex CLI 다음 Claude CLI를 우선한다.
+- [`engine.py`](../engine.py), [`app.py`](../app.py), [`cli.py`](../cli.py): 실행 방식과 상태 표시가 `claude_cli`를 보존하고, 자동 경로 설명 및 capability probe에 Claude를 포함한다.
+- [`tests/test_providers.py`](../tests/test_providers.py), [`tests/test_ai_runtime.py`](../tests/test_ai_runtime.py), [`tests/test_cli_ai_contract.py`](../tests/test_cli_ai_contract.py), [`tests/test_app_ai_contract.py`](../tests/test_app_ai_contract.py): Claude capability·구조화 출력·이미지 제외·Codex 다음 자동 우선순위와 노출 계약을 검증한다.
+
+구현/검증:
+
+1. 선언 의존성을 설치한 환경에서 `python -m unittest discover -s tests -v`를 실행한다.
+2. 실제 Claude/Codex 분석 요청은 하지 않고 subprocess fake로 계약을 고정한다.
+3. `claude auth status` 출력 및 모든 stderr은 기존 마스킹 함수를 통과한다.
+
+커밋: `feat: [P5] #11 Claude CLI 자동 분석 fallback 지원`
 
 ## 최종 완료 판정
 

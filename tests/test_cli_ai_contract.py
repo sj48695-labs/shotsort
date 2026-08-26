@@ -52,6 +52,18 @@ class CliAiContractTest(unittest.TestCase):
         save.assert_called_once_with("openai", with_image=True, allowed=True)
         self.assertTrue(scan.call_args.kwargs["api_consent"])
 
+    def test_auto_allow_api_transfer_also_saves_scoped_consent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = self.parse(directory, "--provider", "auto", "--allow-api-transfer")
+            result = SimpleNamespace(total=0, new=0, skipped=0, consolidate_error=None,
+                                     actual_provider="local", actual_method=providers.ExecutionMethod.LOCAL,
+                                     actual_model=None, external_transfer=False, catalog_from_cache=False,
+                                     fallback_reason=None)
+            with patch.object(cli.engine, "scan_images", return_value=result), \
+                 patch.object(cli.engine, "set_api_consent") as save:
+                cli.cmd_scan(args)
+        save.assert_called_once_with("anthropic", with_image=False, allowed=True)
+
     def test_auto_and_legacy_shorthand_keep_modes_for_engine(self):
         with tempfile.TemporaryDirectory() as directory:
             result = SimpleNamespace(total=0, new=0, skipped=0, consolidate_error=None,
@@ -64,6 +76,10 @@ class CliAiContractTest(unittest.TestCase):
                 cli.cmd_scan(self.parse(directory, "--provider", "openai", "--model", "m"))
                 self.assertEqual(scan.call_args.kwargs["analysis_mode"], "direct")
                 self.assertEqual(scan.call_args.kwargs["provider"], "openai")
+
+    def test_scan_help_describes_claude_text_fallback(self):
+        scan_parser = cli.build_parser()._subparsers._group_actions[0].choices["scan"]
+        self.assertIn("Claude CLI(텍스트)", scan_parser.format_help())
 
     def test_status_output_uses_actual_result_and_masks_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
