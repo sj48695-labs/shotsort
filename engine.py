@@ -1209,7 +1209,8 @@ def scan_images(
                 has_api_consent(config.provider, with_image=with_image, conn=conn)))
     mode = analysis_mode or (providers.AnalysisMode.DIRECT if legacy_remote_request and config.is_remote
                              else providers.AnalysisMode.LOCAL)
-    plan = providers.resolve_execution(mode, config, api_consent=consent)
+    plan = providers.resolve_execution(mode, config, api_consent=consent,
+                                       with_image=with_image)
     remote = plan.method != providers.ExecutionMethod.LOCAL
     res = ScanResult(used_llm=remote, actual_provider=plan.status.provider,
                      actual_method=plan.method, actual_model=plan.status.model,

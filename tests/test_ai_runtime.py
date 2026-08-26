@@ -76,7 +76,21 @@ class AIRuntimeTest(unittest.TestCase):
                 self.root, provider="anthropic", analysis_mode="auto", consolidate=False,
             )
         self.assertEqual(result.actual_method, providers.ExecutionMethod.CODEX_CLI)
-        self.assertEqual(create.call_args.args[0].model, "gpt-5")
+        self.assertIsNone(create.call_args.args[0].model)
+
+    def test_auto_uses_claude_after_unavailable_codex_for_text_only_analysis(self):
+        capabilities = {
+            "codex": providers.ProviderCapability.codex_cli(available=False),
+            "claude": providers.ProviderCapability.claude_cli(available=True, logged_in=True),
+        }
+        with patch.object(engine.providers, "probe_cli_capabilities", return_value=capabilities), \
+             patch.object(engine.providers, "probe_codex_cli", return_value=capabilities["codex"]), \
+             patch.object(engine.providers, "probe_claude_cli", return_value=capabilities["claude"]), \
+             patch.object(engine.providers, "create_provider", return_value=FakeAdapter()) as create, \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(self.root, provider="anthropic", analysis_mode="auto", consolidate=False)
+        self.assertEqual(result.actual_method, providers.ExecutionMethod.CLAUDE_CLI)
+        self.assertEqual(create.call_args.args[0].provider, "claude")
 
     def test_consented_api_failure_only_retries_local(self):
         adapter = FakeAdapter(RuntimeError("rate limit"))
