@@ -29,6 +29,15 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn("공증 릴리스 준비 중", self.html)
         self.assertIn("공증 릴리스가 준비되면", self.html)
 
+    def test_landing_shows_a_real_app_demo_with_an_accessible_description(self):
+        screenshot = LANDING / "assets" / "shotsort-demo.png"
+        self.assertTrue(screenshot.is_file())
+        self.assertIn('src="assets/shotsort-demo.png"', self.html)
+        self.assertIn("실제 shotsort 앱 화면", self.html)
+        self.assertIn("분류", self.html)
+        self.assertIn("그룹", self.html)
+        self.assertIn("휴지통", self.html)
+
     def test_feedback_prefills_the_operational_signal_fields(self):
         self.assertIn('id="installed-version"', self.html)
         self.assertIn('id="installation-status"', self.html)
