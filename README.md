@@ -35,7 +35,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 ./run.sh cli groups
 ```
 
-> 💡 `export ANTHROPIC_API_KEY=sk-...` 후 실행하면 Claude가 더 정확히 묶어줍니다.
+> 💡 API를 쓰려면 해당 공급자의 환경변수(예: `ANTHROPIC_API_KEY`)를 운영체제 환경에 설정한 뒤 앱에서 전송 범위를 확인하고 동의합니다. 키 값은 문서·화면·SQLite에 표시하거나 저장하지 않습니다.
 > 소스(git) 설치는 git 기반 자동 업데이트도 동작합니다.
 
 ### 처음 사용
@@ -56,16 +56,19 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 - **자주 쓰는 프로젝트**: 프로젝트명과 별칭을 한 번 저장하면 이후 스캔에 자동 적용
 - **그룹**: 기본 접힘(삭제후보·큰 그룹만 펼침), 크기순 정렬. 헤더의 `이 그룹 휴지통으로` 로 그룹 통째 정리
 - **선택 삭제**: 카드 체크 → `선택 항목 휴지통으로` (확인 후 복구 가능한 휴지통으로)
-- **분류 방식**: 로컬(외부 전송 없음) 또는 Claude·OpenAI·Grok API 선택
-- **이미지 내용도 AI로 분석**: 끄면 OCR 텍스트만, 켜면 축소 이미지도 선택한 API로 전송
+- **분석 방식**: `자동`은 검증된 Codex CLI → 이미 동의한 API → 로컬 순서로 선택합니다. `로컬 분석만`, `Codex CLI`, `설치된 API Key`, `직접 설정`도 명시적으로 고를 수 있습니다.
+- **모델**: 기본은 자동 추천입니다. 마지막으로 확인한 모델 목록은 캐시해 보여 주며 목록에 없는 모델은 직접 입력할 수 있습니다. 저장한 모델이 목록에서 사라지면 자동 추천으로 바꾸기 전에 확인합니다.
+- **이미지 내용도 AI로 분석**: 끄면 OCR 텍스트만, 켜면 축소 이미지도 선택한 CLI/API로 전송될 수 있습니다.
 
 ### CLI
 
 ```bash
 ./run.sh cli scan                      # ~/Desktop 분석 (캐시된 건 스킵)
-./run.sh cli scan ~/Pictures --with-image
-./run.sh cli scan --provider openai --model <모델명> --with-image
-./run.sh cli scan --provider xai --model <모델명> --with-image
+./run.sh cli scan ~/Pictures --provider local
+./run.sh cli scan --provider auto       # Codex CLI → Claude CLI(텍스트) → 동의된 API → local
+./run.sh cli scan --provider cli        # 검증된 Codex/Claude CLI, 불가하면 local
+./run.sh cli scan --provider api --direct-provider openai --model <모델명> --allow-api-transfer
+./run.sh cli scan --provider direct --direct-provider xai --model <모델명> --with-image --allow-api-transfer
 ./run.sh cli groups                    # 프로젝트별 그룹
 ./run.sh cli projects add act-server --aliases "act server,github.com/acme/act-server"
 ./run.sh cli projects list             # 저장 프로젝트 확인
@@ -83,6 +86,17 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 
 (`shotsort.py` 는 `cli.py` 의 하위호환 shim 이라 `python shotsort.py scan ...` 도 동일하게 동작합니다.)
 
+`--provider`는 `auto`, `cli`, `api`, `direct`, `local`을 지원합니다. 이전의
+`--provider openai` 같은 공급자명은 `direct`의 호환 단축값입니다. API를 쓰는
+비대화식 실행은 매번 `--allow-api-transfer`가 필요합니다. 이 플래그가 없으면 API
+후보·키가 있어도 호출하지 않고 로컬 분석으로 fallback합니다. 시작과 종료에는 실제
+provider/method/model, 외부 전송 여부, 모델 목록 cache 상태와 fallback 사유만 출력하며,
+키·Bearer 토큰 등 비밀 값은 마스킹합니다.
+
+자동 모드와 `cli` 모드는 설치·로그인·구조화 출력을 확인한 Codex CLI를 먼저 사용하고,
+사용자가 이미지 전송을 켜지 않았을 때만 Claude CLI를 다음 후보로 사용합니다. 현재
+Claude CLI에는 로컬 이미지 첨부 계약이 없으므로 이미지 분석에는 선택되지 않습니다.
+
 `similarity` 출력은 `exact`(완전히 같은 파일) 또는 `유사` 그룹별로 보존 후보, 구성원 번호, 보존 후보 기준 유사도와 파일 크기를 보여줍니다. 검사는 파일을 바꾸지 않습니다. 삭제하려면 반드시 `--delete GROUP:NUMBER`로 **보존 후보가 아닌** 구성원을 지정해야 하며, 지정하지 않은 파일과 보존 후보는 자동 삭제되지 않습니다. 실행 전에는 y/N 확인이 나오고 `-y`로만 생략할 수 있습니다.
 
 ---
@@ -91,7 +105,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 
 1. **로컬 OCR** — macOS Vision 으로 이미지에서 텍스트 추출 (무료·오프라인, 한글/영문). 안 되면 tesseract → 그것도 없으면 건너뜀.
 2. **분류** — 추출 텍스트(+선택적 축소 이미지)로 `project / kind / 요약 / 삭제가능` 태그 부여
-   - **AI API**: Claude, OpenAI API, xAI Grok 중 선택. 모델명과 해당 API 키 필요
+   - **AI CLI/API**: 검증된 Codex CLI, OCR 텍스트 전용 Claude CLI 또는 Claude·OpenAI·xAI API 중 선택. API는 모델명과 해당 API 키 필요
    - **로컬 모드**: 규칙 기반 종류 분류 + OCR 토큰 + 색상·밝기·화면 배치 유사도
 3. **그룹 정규화** — 비슷한 것끼리 묶고 그룹명을 정리
 
@@ -149,10 +163,18 @@ Claude 모드에서 **썸네일도 전송**을 켰을 때 시각 분류 힌트�
 
 ## API 비용과 개인정보
 
-로컬 모드는 외부 전송과 API 비용이 없습니다. AI API를 선택하면 기본적으로 OCR
-텍스트가 해당 공급자에 전송되고, **이미지 내용도 AI로 분석**을 켠 경우에만 축소
-이미지가 함께 전송됩니다. 모델별 비용·지원 기능은 각 공급자의 현재 문서를 확인하세요.
-shotsort는 OpenAI·Grok 모델명을 임의로 고정하지 않으며 사용자가 직접 입력합니다.
+로컬 모드는 외부 전송과 API 비용이 없습니다. Codex CLI와 AI API는 모두 외부 서비스로
+OCR 텍스트를 전송할 수 있고, **이미지 내용도 AI로 분석**을 켠 경우에는 축소 이미지도
+전송될 수 있습니다. API는 공급자와 이미지 포함 여부별로 앱에서 명시 동의해야 하며,
+동의하지 않거나 CLI/API가 실패하면 로컬 분석으로 계속합니다. 다른 유료 API로 자동
+전환하지 않습니다.
+
+API 키는 macOS Keychain 또는 사용자가 설정한 환경변수에서만 읽으며, shotsort의 SQLite
+설정·모델 목록 캐시·알림에는 키 값을 저장하거나 표시하지 않습니다. 화면에는
+Keychain/환경변수의 **사용 가능 상태만** 보입니다. 모델 목록 캐시는 마지막 정상 목록과
+갱신 시각을 보존하고 24시간 뒤 새로 확인합니다. 조회할 수 없는 경우에도 캐시 또는 자동
+추천과 직접 입력으로 계속 사용할 수 있습니다. 모델별 비용·지원 기능은 각 공급자의 현재
+문서를 확인하세요.
 
 설치 전 데이터 처리 경계와 다운로드 checksum은 [공개 설치 랜딩](https://sj48695-labs.github.io/shotsort/)에 정리되어 있습니다. 설치 경험이나 문제는 [GitHub feedback issue](https://github.com/sj48695-labs/shotsort/issues/new?labels=feedback)로 알려 주세요. 별도 분석 쿠키나 SDK는 사용하지 않습니다.
 

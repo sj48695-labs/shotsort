@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import zipfile
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
@@ -77,6 +78,19 @@ def db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS ai_settings (
+               key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL
+           )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS model_catalog_cache (
+               provider TEXT NOT NULL, execution_mode TEXT NOT NULL,
+               models TEXT NOT NULL, fetched_at REAL NOT NULL,
+               source TEXT NOT NULL DEFAULT 'cached',
+               PRIMARY KEY(provider, execution_mode)
+           )"""
+    )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
     if "manual_group" not in columns:
         conn.execute("ALTER TABLE images ADD COLUMN manual_group INTEGER NOT NULL DEFAULT 0")
@@ -109,6 +123,74 @@ def db(conn: sqlite3.Connection | None = None) -> sqlite3.Connection:
     )
     conn.commit()
     return conn
+
+
+def load_ai_settings(conn: sqlite3.Connection | None = None) -> dict:
+    """Return persisted non-secret AI preferences.
+
+    API keys deliberately do not belong in this SQLite store; callers should only
+    persist keychain/environment availability separately from the key itself.
+    """
+    conn = conn or db()
+    return {row["key"]: json.loads(row["value"])
+            for row in conn.execute("SELECT key, value FROM ai_settings")}
+
+
+def save_ai_settings(settings: dict, conn: sqlite3.Connection | None = None) -> dict:
+    conn = conn or db()
+    now = time.time()
+    for key, value in settings.items():
+        if "key" in key.lower() or "token" in key.lower():
+            raise ValueError("API 키는 설정 DB에 저장할 수 없습니다")
+        conn.execute("""INSERT INTO ai_settings(key,value,updated_at) VALUES(?,?,?)
+                     ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at""",
+                     (key, json.dumps(value, ensure_ascii=False), now))
+    conn.commit()
+    return load_ai_settings(conn)
+
+
+def set_api_consent(provider: str, *, with_image: bool, allowed: bool,
+                    conn: sqlite3.Connection | None = None) -> None:
+    save_ai_settings({f"api_consent:{provider.lower()}:{int(with_image)}": bool(allowed)}, conn)
+
+
+def has_api_consent(provider: str, *, with_image: bool,
+                    conn: sqlite3.Connection | None = None) -> bool:
+    return bool(load_ai_settings(conn).get(
+        f"api_consent:{provider.lower()}:{int(with_image)}", False))
+
+
+def keychain_status(provider: str, env: dict[str, str] | None = None) -> str:
+    """Expose only credential availability, never its value.
+
+    Keychain integration is intentionally deferred to the UI layer; in CI and
+    non-macOS environments environment variables remain read-only fallback.
+    """
+    values = os.environ if env is None else env
+    names = {"anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
+             "openai": ("OPENAI_API_KEY",), "xai": ("XAI_API_KEY",)}
+    return "environment" if any(values.get(name) for name in names.get(provider, ())) else "unavailable"
+
+
+def save_model_catalog(provider: str, execution_mode: str, models: list[str], *,
+                       source: str = "verified", conn: sqlite3.Connection | None = None) -> None:
+    conn = conn or db()
+    conn.execute("""INSERT INTO model_catalog_cache(provider,execution_mode,models,fetched_at,source)
+                 VALUES(?,?,?,?,?) ON CONFLICT(provider,execution_mode) DO UPDATE SET
+                 models=excluded.models, fetched_at=excluded.fetched_at, source=excluded.source""",
+                 (provider, execution_mode, json.dumps(models, ensure_ascii=False), time.time(), source))
+    conn.commit()
+
+
+def load_model_catalog(provider: str, execution_mode: str, *,
+                       max_age_seconds: float = 86400, conn: sqlite3.Connection | None = None) -> dict | None:
+    conn = conn or db()
+    row = conn.execute("SELECT models, fetched_at, source FROM model_catalog_cache WHERE provider=? AND execution_mode=?",
+                       (provider, execution_mode)).fetchone()
+    if row is None:
+        return None
+    return {"models": json.loads(row["models"]), "fetched_at": row["fetched_at"],
+            "source": row["source"], "stale": time.time() - row["fetched_at"] > max_age_seconds}
 
 
 def _normalise_aliases(aliases: list[str] | str | None) -> list[str]:
@@ -1077,6 +1159,14 @@ class ScanResult:
     errors: list[tuple[str, str]] = field(default_factory=list)  # (filename, message)
     consolidate_error: str | None = None
     used_llm: bool = False
+    actual_provider: str = "local"
+    actual_method: providers.ExecutionMethod = providers.ExecutionMethod.LOCAL
+    actual_mode: str = providers.ExecutionMethod.LOCAL.value
+    actual_model: str | None = None
+    external_transfer: bool = False
+    catalog_from_cache: bool = False
+    model_catalog_from_cache: bool = False
+    fallback_reason: str | None = None
 
 
 # on_item(i, total, path: Path, tag: dict | None, error: Exception | None)
@@ -1090,26 +1180,63 @@ def scan_images(
     provider: str | None = None,
     model: str | None = None,
     with_image: bool = False,
+    analysis_mode: providers.AnalysisMode | str | None = None,
+    api_consent: bool | None = None,
     force: bool = False,
     consolidate: bool = True,
     project_hints: list[str] | None = None,
     on_item: ItemCallback | None = None,
 ) -> ScanResult:
     """이미지를 분석해 DB 에 저장하고(캐시되지 않은 것만), 2차 그룹 정규화까지 수행."""
+    legacy_provider = provider is not None
     if provider is None:
         provider = "anthropic" if use_llm else "local"
-    # 기존 Claude 호출은 모델 기본값을 유지하고, 다른 공급자는 명시 선택을 요구한다.
-    selected_model = model or (DEFAULT_MODEL if provider in {"anthropic", "claude"} else None)
+    # 자동/CLI 모드에서는 Codex 어댑터가 자체 검증 기본 모델을 선택해야 한다.
+    # Anthropic 기본 모델은 CLI 후보가 제외된 뒤 API 경로에서만 보완한다.
+    requested_mode = providers.AnalysisMode(analysis_mode) if analysis_mode else None
+    selected_model = model or (
+        DEFAULT_MODEL if provider in {"anthropic", "claude"}
+        and requested_mode not in {providers.AnalysisMode.AUTO, providers.AnalysisMode.CLI}
+        else None
+    )
     config = providers.resolve_config(provider, selected_model)
-    adapter = providers.create_provider(config)
-    remote = adapter is not None
-    res = ScanResult(used_llm=remote)
+    # Explicit legacy API selection remains compatible, while new mode-based
+    # callers must provide (or persist) transfer consent.
+    conn = db()
+    legacy_remote_request = legacy_provider or bool(use_llm)
+    consent = (api_consent if api_consent is not None else
+               (True if legacy_remote_request and config.is_remote else
+                has_api_consent(config.provider, with_image=with_image, conn=conn)))
+    mode = analysis_mode or (providers.AnalysisMode.DIRECT if legacy_remote_request and config.is_remote
+                             else providers.AnalysisMode.LOCAL)
+    plan = providers.resolve_execution(mode, config, api_consent=consent,
+                                       with_image=with_image)
+    remote = plan.method != providers.ExecutionMethod.LOCAL
+    res = ScanResult(used_llm=remote, actual_provider=plan.status.provider,
+                     actual_method=plan.method, actual_model=plan.status.model,
+                     actual_mode=plan.method.value,
+                     external_transfer=plan.status.external_transfer,
+                     fallback_reason=plan.status.fallback_reason)
+    try:
+        adapter = providers.create_provider(plan.config)
+    except Exception as error:
+        # SDK 미설치·잘못된 인증 설정처럼 요청 전 초기화가 실패한 경우에도
+        # 외부 분석 불가가 전체 스캔 실패로 이어지면 안 된다.
+        reason = providers.mask_secret(f"{classify_provider_error(error)}: {error}")
+        adapter = None
+        remote = False
+        res.used_llm = False
+        res.actual_provider = "local"
+        res.actual_method = providers.ExecutionMethod.LOCAL
+        res.actual_mode = providers.ExecutionMethod.LOCAL.value
+        res.actual_model = None
+        res.external_transfer = False
+        res.fallback_reason = reason
     imgs = find_images(root)
     res.total = len(imgs)
     if not imgs:
         return res
 
-    conn = db()
     project_rules = resolve_project_rules(conn) if remote else []
 
     for i, path in enumerate(imgs, 1):
@@ -1128,10 +1255,30 @@ def scan_images(
             tag = (classify_with_provider(adapter, text, path, with_image, project_rules)
                    if adapter else classify_local(text, path))
         except Exception as e:
-            res.errors.append((path.name, str(e)))
-            if on_item:
-                on_item(i, res.total, path, None, e)
-            continue
+            if remote:
+                # A failed CLI/API request never selects another paid provider.
+                # Re-run this item locally and keep the reason visible to callers.
+                reason = classify_provider_error(e)
+                res.fallback_reason = providers.mask_secret(f"{reason}: {e}")
+                res.actual_provider = "local"
+                res.actual_method = providers.ExecutionMethod.LOCAL
+                res.actual_mode = providers.ExecutionMethod.LOCAL.value
+                res.actual_model = None
+                try:
+                    tag = classify_local(text, path)
+                    adapter = None
+                    remote = False
+                    project_rules = []
+                except Exception as local_error:
+                    res.errors.append((path.name, providers.mask_secret(local_error)))
+                    if on_item:
+                        on_item(i, res.total, path, None, local_error)
+                    continue
+            else:
+                res.errors.append((path.name, providers.mask_secret(e)))
+                if on_item:
+                    on_item(i, res.total, path, None, e)
+                continue
 
         st = path.stat()
         conn.execute(
@@ -1156,8 +1303,39 @@ def scan_images(
                 project_hints=project_hints, paths=imgs
             )
         except Exception as e:
-            res.consolidate_error = str(e)
+            if remote:
+                res.fallback_reason = providers.mask_secret(
+                    f"{classify_provider_error(e)}: {e}")
+                res.actual_provider = "local"
+                res.actual_method = providers.ExecutionMethod.LOCAL
+                res.actual_mode = providers.ExecutionMethod.LOCAL.value
+                res.actual_model = None
+                try:
+                    consolidate_all(conn=conn, use_llm=False, project_hints=project_hints,
+                                    paths=imgs)
+                except Exception as local_error:
+                    res.consolidate_error = providers.mask_secret(local_error)
+            else:
+                res.consolidate_error = providers.mask_secret(e)
     return res
+
+
+def classify_provider_error(error: Exception) -> str:
+    """Stable, secret-free error categories used by fallback status/UI."""
+    if isinstance(error, providers.ExecutionTimeout):
+        return "timeout"
+    if isinstance(error, providers.AuthenticationError):
+        return "authentication"
+    text = str(error).lower()
+    if "rate" in text or "429" in text or "quota" in text:
+        return "rate_limit"
+    if any(token in text for token in ("network", "connection", "dns", "unreachable", "socket")):
+        return "network"
+    if isinstance(error, providers.StructuredOutputError):
+        return "structured_output"
+    if isinstance(error, providers.CapabilityError):
+        return "capability"
+    return "provider_error"
 
 
 def consolidate_all(

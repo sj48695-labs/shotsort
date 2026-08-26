@@ -18,6 +18,7 @@ from pathlib import Path
 from nicegui import run, ui
 
 import engine
+import providers
 from lazy_groups import GroupPage
 from preview_layout import (
     PREVIEW_CARD_CLASSES,
@@ -31,6 +32,18 @@ from preview_layout import (
 
 
 GROUP_PAGE_SIZE = 24
+ANALYSIS_MODE_OPTIONS = {
+    "auto": "자동 (Codex CLI → Claude CLI(텍스트) → 동의한 API → 로컬)",
+    "local": "로컬 분석만 (외부 전송 없음)",
+    "cli": "설치된 Codex/Claude CLI",
+    "api": "설치된 API Key 사용",
+    "direct": "직접 설정 (고급)",
+}
+API_PROVIDER_OPTIONS = {
+    "anthropic": "Anthropic Claude",
+    "openai": "OpenAI",
+    "xai": "xAI Grok",
+}
 
 
 @ui.page("/")
@@ -68,20 +81,18 @@ def index():
         with ui.row().classes("items-center gap-3 w-full"):
             path_in = ui.input("스캔 경로", value=str(engine.DEFAULT_SCAN_DIR)).classes("grow")
             scan_btn = ui.button("스캔", icon="search")
+        ai_settings = engine.load_ai_settings()
         with ui.row().classes("items-start gap-3 w-full"):
+            mode_in = ui.select(
+                ANALYSIS_MODE_OPTIONS, value=ai_settings.get("analysis_mode", "auto"),
+                label="분석 방식",
+            ).classes("w-72")
             provider_in = ui.select(
-                {
-                    "local": "내 Mac에서만 분석",
-                    "anthropic": "Claude API",
-                    "openai": "OpenAI API (Codex 계열 포함)",
-                    "xai": "xAI Grok API",
-                },
-                value="local",
-                label="분류 방식",
-            ).classes("w-64")
-            model_in = ui.input(
-                "모델명", placeholder="API에서 사용할 모델명을 입력"
-            ).classes("grow")
+                API_PROVIDER_OPTIONS, value=ai_settings.get("analysis_provider", "anthropic"),
+                label="API 공급자",
+            ).classes("w-48")
+            model_select = ui.select({"__auto__": "자동 추천"}, value="__auto__", label="모델").classes("w-48")
+            model_in = ui.input("직접 모델 입력", placeholder="목록에 없을 때만 입력").classes("grow")
             img_sw = ui.switch("이미지 내용도 AI로 분석", value=False)
         ui.separator()
         with ui.row().classes("items-center gap-3 w-full"):
@@ -93,28 +104,74 @@ def index():
             projects_btn = ui.button("프로젝트 관리", icon="bookmark").props("outline")
         projects_box = ui.row().classes("items-center gap-2 w-full")
         mode_lbl = ui.label().classes("text-xs text-gray-500")
+        model_warning = ui.label().classes("text-xs text-amber-800")
+        model_warning.visible = False
+        reset_model_btn = ui.button("자동 추천으로 바꾸기").props("flat dense")
+        reset_model_btn.visible = False
+
+        def selected_model() -> str | None:
+            direct = (model_in.value or "").strip()
+            return direct or (None if model_select.value == "__auto__" else model_select.value)
 
         def refresh_mode():
+            """Show the exact safe route before scanning; this never performs AI work."""
+            mode = mode_in.value
             provider = provider_in.value
-            if provider != "local":
-                names = {"anthropic": "Claude", "openai": "OpenAI", "xai": "Grok"}
-                key_names = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
-                             "xai": "XAI_API_KEY"}
-                mode_lbl.text = (
-                    f"{names[provider]} API 사용 · OCR 텍스트가 전송됩니다. 이미지 분석을 켜면 "
-                    f"축소 이미지도 전송됩니다. 환경변수: {key_names[provider]}"
-                )
-                model_in.enable()
-                img_sw.enable()
-            else:
-                mode_lbl.text = (
-                    "외부 전송 없음 · OCR, 프로젝트 규칙, 색상과 화면 배치를 함께 비교합니다. "
-                    "API 없이도 동작합니다."
-                )
-                model_in.disable()
-                img_sw.disable()
+            model = selected_model()
+            catalog_mode = "cli" if mode == "cli" else "api"
+            catalog = engine.load_model_catalog(provider, catalog_mode)
+            options = {"__auto__": "자동 추천"}
+            if catalog:
+                options.update({name: name for name in catalog["models"]})
+            model_select.set_options(options)
+            capabilities = (providers.probe_cli_capabilities()
+                            if mode in {"auto", "cli"} else None)
+            execution_model = model or (
+                engine.DEFAULT_MODEL if provider == "anthropic" and mode not in {"auto", "cli"}
+                else None
+            )
+            config = providers.resolve_config(provider, execution_model)
+            consent = engine.has_api_consent(provider, with_image=img_sw.value)
+            plan = providers.resolve_execution(
+                mode, config, api_consent=consent, cli_capabilities=capabilities,
+                with_image=img_sw.value,
+            )
+            status = engine.keychain_status(provider)
+            route = f"선택 예정: {plan.status.provider} / {plan.status.method.value}"
+            if plan.status.model:
+                route += f" / {plan.status.model}"
+            transfer = "외부 전송 있음" if plan.status.external_transfer else "외부 전송 없음"
+            capability_detail = "; ".join(
+                f"{name}: {item.reason}" for name, item in (capabilities or {}).items()
+                if item.reason
+            )
+            detail = plan.status.fallback_reason or capability_detail
+            cache = (f"모델 목록: 캐시 {len(catalog['models'])}개"
+                     if catalog else "모델 목록: 캐시 없음 · 자동 추천 사용")
+            if catalog and catalog["stale"]:
+                cache += " (24시간 경과)"
+            mode_lbl.text = f"{route} · {transfer} · {cache} · Keychain/환경변수 상태: {status}"
+            if detail:
+                mode_lbl.text += f" · CLI 상태: {providers.mask_secret(detail)}"
 
-        provider_in.on_value_change(lambda _: refresh_mode())
+            saved = ai_settings.get("analysis_model")
+            missing = bool(saved and catalog and saved not in catalog["models"])
+            model_warning.text = "저장된 모델을 찾을 수 없습니다. 확인 후 자동 추천으로 바꿉니다."
+            model_warning.visible = missing
+            reset_model_btn.visible = missing
+
+        async def confirm_missing_saved_model():
+            ok = await _confirm("저장된 모델을 찾을 수 없습니다. 자동 추천으로 바꿀까요?")
+            if ok:
+                model_select.value = "__auto__"
+                model_in.value = ""
+                ai_settings["analysis_model"] = ""
+                engine.save_ai_settings({"analysis_model": ""})
+                refresh_mode()
+
+        for control in (mode_in, provider_in, model_select, model_in, img_sw):
+            control.on_value_change(lambda _: refresh_mode())
+        reset_model_btn.on_click(confirm_missing_saved_model)
         refresh_mode()
         prog_lbl = ui.label().classes("text-xs text-primary")
 
@@ -331,16 +388,54 @@ def index():
             checks[path] = cb
 
     # ── 액션 ────────────────────────────────────────────────────────────────
+    async def request_api_consent() -> bool:
+        """Ask once for the precise provider/image transfer scope before an API call."""
+        provider = provider_in.value
+        image_scope = "축소 이미지와 OCR 텍스트" if img_sw.value else "OCR 텍스트"
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label("API 전송 동의").classes("text-lg font-bold")
+            ui.label(
+                f"{API_PROVIDER_OPTIONS[provider]} API로 {image_scope}를 전송해 분석합니다. "
+                "이 동의는 현재 공급자와 이미지 포함 여부에만 적용됩니다."
+            ).classes("text-sm")
+            with ui.row().classes("justify-end w-full"):
+                ui.button("취소", on_click=lambda: dialog.submit(False)).props("flat")
+                ui.button("동의하고 계속", on_click=lambda: dialog.submit(True))
+        allowed = await dialog
+        if allowed:
+            engine.set_api_consent(provider, with_image=img_sw.value, allowed=True)
+        return bool(allowed)
+
     async def do_scan():
         root = Path(path_in.value).expanduser()
         if not root.exists():
             ui.notify(f"경로 없음: {root}", type="negative")
             return
+        mode = mode_in.value
         provider = provider_in.value
-        model = (model_in.value or "").strip() or None
-        if provider != "local" and not model and provider != "anthropic":
-            ui.notify("선택한 API의 모델명을 입력하세요.", type="warning")
-            return
+        model = selected_model()
+        execution_model = model or (
+            engine.DEFAULT_MODEL if provider == "anthropic" and mode not in {"auto", "cli"}
+            else None
+        )
+        config = providers.resolve_config(provider, execution_model)
+        capabilities = providers.probe_cli_capabilities() if mode in {"auto", "cli"} else None
+        consent = engine.has_api_consent(provider, with_image=img_sw.value)
+        possible_api = providers.resolve_execution(
+            mode, config, api_consent=True, cli_capabilities=capabilities,
+            with_image=img_sw.value,
+        )
+        if possible_api.method == providers.ExecutionMethod.API and not consent:
+            if not await request_api_consent():
+                ui.notify("API 전송 동의가 없어 로컬 분석을 사용합니다.", type="info")
+            consent = engine.has_api_consent(provider, with_image=img_sw.value)
+        engine.save_ai_settings({
+            "analysis_mode": mode,
+            "analysis_provider": provider,
+            "analysis_model": model or "",
+        })
+        if mode in {"api", "direct"} and not model:
+            ui.notify("자동 추천 모델을 사용합니다. 목록에 없는 모델은 직접 입력할 수 있습니다.", type="info")
         scan_btn.props("loading")
         scan_btn.disable()
         progress.update(i=0, total=0, running=True)
@@ -352,6 +447,8 @@ def index():
                 provider=provider,
                 model=model,
                 with_image=img_sw.value,
+                analysis_mode=mode,
+                api_consent=consent,
                 on_item=on_scan_item,
             )
         except Exception as e:
@@ -362,6 +459,12 @@ def index():
             scan_btn.props(remove="loading")
             scan_btn.enable()
         msg = f"완료: 신규 {res.new}개, 스킵 {res.skipped}개"
+        msg += f" · 실제: {res.actual_provider}/{res.actual_method.value}"
+        if res.actual_model:
+            msg += f"/{res.actual_model}"
+        msg += " · 외부 전송" if res.external_transfer else " · 외부 전송 없음"
+        if res.fallback_reason:
+            msg += f" · fallback: {providers.mask_secret(res.fallback_reason)}"
         if res.consolidate_error:
             msg += f" (그룹 정규화 실패: {res.consolidate_error})"
         ui.notify(msg, type="positive")
