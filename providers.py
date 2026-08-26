@@ -256,6 +256,14 @@ def resolve_execution(mode: AnalysisMode | str = AnalysisMode.AUTO,
         return _local_plan((capability.reason if capability else None) or "Codex CLI를 사용할 수 없습니다")
 
     wants_api = selected_mode in (AnalysisMode.AUTO, AnalysisMode.API, AnalysisMode.DIRECT)
+    # 자동 모드에서 API 공급자의 기본 모델명을 Codex CLI에 넘기면 안 된다.
+    # CLI 경로가 제외된 뒤에만 기존 Anthropic 기본값을 적용해 API fallback도
+    # 모델명을 직접 입력하지 않고 사용할 수 있게 한다.
+    if wants_api and selected_config.provider == "anthropic" and not selected_config.model:
+        selected_config = ProviderConfig(
+            selected_config.provider, "claude-opus-4-8", selected_config.api_key,
+            selected_config.base_url,
+        )
     if wants_api and selected_config.is_remote and api_consent:
         try:
             validate_config(selected_config)

@@ -44,7 +44,7 @@ class AppAiContractTests(unittest.TestCase):
         self.assertIn("confirm_missing_saved_model", self.source)
 
     def test_automatic_anthropic_model_is_used_for_api_consent_preflight(self):
-        self.assertIn('execution_model = model or (engine.DEFAULT_MODEL if provider == "anthropic" else None)',
+        self.assertIn('engine.DEFAULT_MODEL if provider == "anthropic" and mode not in {"auto", "cli"}',
                       self.source)
 
 

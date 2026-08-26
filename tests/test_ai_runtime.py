@@ -67,6 +67,17 @@ class AIRuntimeTest(unittest.TestCase):
         self.assertTrue(result.external_transfer)
         self.assertEqual(result.new, 1)
 
+    def test_auto_uses_codex_default_instead_of_anthropic_default(self):
+        capability = providers.ProviderCapability.codex_cli(available=True, logged_in=True)
+        with patch.object(engine.providers, "probe_codex_cli", return_value=capability), \
+             patch.object(engine.providers, "create_provider", return_value=FakeAdapter()) as create, \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(
+                self.root, provider="anthropic", analysis_mode="auto", consolidate=False,
+            )
+        self.assertEqual(result.actual_method, providers.ExecutionMethod.CODEX_CLI)
+        self.assertEqual(create.call_args.args[0].model, "gpt-5")
+
     def test_consented_api_failure_only_retries_local(self):
         adapter = FakeAdapter(RuntimeError("rate limit"))
         result = self.scan_with(self.plan(providers.ExecutionMethod.API, "openai"), adapter)
