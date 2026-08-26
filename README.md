@@ -58,7 +58,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 - **선택 삭제**: 카드 체크 → 상단 `선택 항목 휴지통으로` 또는 그룹의 `선택 삭제` (확인 후 복구 가능한 휴지통으로). 아직 펼치지 않은 카드도 전체선택에 포함
 - **직접 설정의 모델 설정**: PC에 로그인된 **Claude·Codex CLI 계정**을 먼저 연결할 수 있습니다. `PC 연결 확인` → `이 방식으로 사용` → 전송 범위 확인 → `승인하고 사용` 순서로 다음 스캔에 적용됩니다. 취소하면 기존 설정을 유지합니다. 모델명을 비워두면 CLI 기본 모델을 사용합니다. CLI 연결은 OCR 텍스트만 공급자 서버에 전송하며, CLI 계정의 요금·사용 한도가 적용됩니다. 오프라인 추론이 아닙니다.
 - **다른 연결 방식**: 무료 로컬 모드(외부 전송 없음)나 Claude·OpenAI·Grok API 키 연결도 선택할 수 있습니다. 직접 설정에서 입력한 API 키는 파일에 저장하지 않으며 화면을 새로 열면 다시 입력해야 합니다. 환경변수로 설정한 API 키도 사용할 수 있습니다.
-- **분석 방식**: `자동`은 검증된 Codex CLI → 이미 동의한 API → 로컬 순서로 선택합니다. `로컬 분석만`, `Codex CLI`, `설치된 API Key`, `직접 설정`도 명시적으로 고를 수 있습니다.
+- **분석 방식**: `자동`은 검증된 Codex CLI → Claude CLI(텍스트만) → 이미 동의한 API → 로컬 순서로 선택합니다. `로컬 분석만`, `설치된 Codex/Claude CLI`, `설치된 API Key`, `직접 설정`도 명시적으로 고를 수 있습니다.
 - **모델**: 기본은 자동 추천입니다. 마지막으로 확인한 모델 목록은 캐시해 보여 주며 목록에 없는 모델은 직접 입력할 수 있습니다. 저장한 모델이 목록에서 사라지면 자동 추천으로 바꾸기 전에 확인합니다.
 - **이미지 내용도 AI로 분석**: 끄면 OCR 텍스트만, 켜면 축소 이미지도 선택한 CLI/API로 전송될 수 있습니다.
 
@@ -67,8 +67,8 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 ```bash
 ./run.sh cli scan                      # ~/Desktop 분석 (캐시된 건 스킵)
 ./run.sh cli scan ~/Pictures --provider local
-./run.sh cli scan --provider auto       # Codex CLI → 동의된 API → local
-./run.sh cli scan --provider cli        # 검증된 Codex CLI만, 불가하면 local
+./run.sh cli scan --provider auto       # Codex CLI → Claude CLI(텍스트) → 동의된 API → local
+./run.sh cli scan --provider cli        # 검증된 Codex/Claude CLI, 불가하면 local
 ./run.sh cli scan --provider api --direct-provider openai --model <모델명> --allow-api-transfer
 ./run.sh cli scan --provider direct --direct-provider xai --model <모델명> --with-image --allow-api-transfer
 ./run.sh cli scan --provider claude_cli # PC의 Claude 로그인 사용 (OCR 텍스트 전송)
@@ -97,6 +97,10 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 provider/method/model, 외부 전송 여부, 모델 목록 cache 상태와 fallback 사유만 출력하며,
 키·Bearer 토큰 등 비밀 값은 마스킹합니다.
 
+자동 모드와 `cli` 모드는 설치·로그인·구조화 출력을 확인한 Codex CLI를 먼저 사용하고,
+사용자가 이미지 전송을 켜지 않았을 때만 Claude CLI를 다음 후보로 사용합니다. 현재
+Claude CLI에는 로컬 이미지 첨부 계약이 없으므로 이미지 분석에는 선택되지 않습니다.
+
 `similarity` 출력은 `exact`(완전히 같은 파일) 또는 `유사` 그룹별로 보존 후보, 구성원 번호, 보존 후보 기준 유사도와 파일 크기를 보여줍니다. 검사는 파일을 바꾸지 않습니다. 삭제하려면 반드시 `--delete GROUP:NUMBER`로 **보존 후보가 아닌** 구성원을 지정해야 하며, 지정하지 않은 파일과 보존 후보는 자동 삭제되지 않습니다. 실행 전에는 y/N 확인이 나오고 `-y`로만 생략할 수 있습니다.
 
 ---
@@ -105,7 +109,7 @@ provider/method/model, 외부 전송 여부, 모델 목록 cache 상태와 fallb
 
 1. **로컬 OCR** — macOS Vision 으로 이미지에서 텍스트 추출 (무료·오프라인, 한글/영문). 안 되면 tesseract → 그것도 없으면 건너뜀.
 2. **분류** — 추출 텍스트(+선택적 축소 이미지)로 `project / kind / 요약 / 삭제가능` 태그 부여
-   - **AI API**: Claude, OpenAI API, xAI Grok 중 선택. 모델명과 해당 API 키 필요
+   - **AI CLI/API**: 검증된 Codex CLI, OCR 텍스트 전용 Claude CLI 또는 Claude·OpenAI·xAI API 중 선택. API는 모델명과 해당 API 키 필요
    - **로컬 모드**: 규칙 기반 종류 분류 + OCR 토큰 + 색상·밝기·화면 배치 유사도
 3. **그룹 정규화** — 비슷한 것끼리 묶고 그룹명을 정리
 

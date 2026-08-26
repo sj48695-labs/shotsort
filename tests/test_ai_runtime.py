@@ -1,3 +1,6 @@
+import json
+import subprocess
+from types import SimpleNamespace
 import sqlite3
 import tempfile
 import unittest
@@ -91,7 +94,21 @@ class AIRuntimeTest(unittest.TestCase):
                 self.root, provider="anthropic", analysis_mode="auto", consolidate=False,
             )
         self.assertEqual(result.actual_method, providers.ExecutionMethod.CODEX_CLI)
-        self.assertEqual(create.call_args.args[0].model, "gpt-5")
+        self.assertIsNone(create.call_args.args[0].model)
+
+    def test_auto_uses_claude_after_unavailable_codex_for_text_only_analysis(self):
+        capabilities = {
+            "codex": providers.ProviderCapability.codex_cli(available=False),
+            "claude": providers.ProviderCapability.claude_cli(available=True, logged_in=True),
+        }
+        with patch.object(engine.providers, "probe_cli_capabilities", return_value=capabilities), \
+             patch.object(engine.providers, "probe_codex_cli", return_value=capabilities["codex"]), \
+             patch.object(engine.providers, "probe_claude_cli", return_value=capabilities["claude"]), \
+             patch.object(engine.providers, "create_provider", return_value=FakeAdapter()) as create, \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(self.root, provider="anthropic", analysis_mode="auto", consolidate=False)
+        self.assertEqual(result.actual_method, providers.ExecutionMethod.CLAUDE_CLI)
+        self.assertEqual(create.call_args.args[0].provider, "claude")
 
     def test_consented_api_failure_only_retries_local(self):
         adapter = FakeAdapter(RuntimeError("rate limit"))
@@ -133,3 +150,46 @@ class AIRuntimeTest(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertEqual(result.actual_provider, "local")
         self.assertIsNone(result.consolidate_error)
+
+    def test_cli_process_contract_through_real_resolver_and_database(self):
+        for vendor, image, timeout in (("codex", True, False), ("claude", False, False),
+                                       ("codex", False, True), ("claude", False, True)):
+            with self.subTest(vendor=vendor, timeout=timeout):
+                self.conn.execute("DELETE FROM images")
+                self.conn.commit()
+                capabilities = {"codex": providers.ProviderCapability.codex_cli(
+                    available=vendor == "codex", logged_in=True),
+                    "claude": providers.ProviderCapability.claude_cli(available=True, logged_in=True)}
+                calls = []
+                def runner(command, **kwargs):
+                    calls.append(command)
+                    if timeout:
+                        raise subprocess.TimeoutExpired(command, 1, stderr="Bearer secret")
+                    tag = FakeAdapter().generate_json()
+                    if vendor == "codex":
+                        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps(tag))
+                        output = "progress"
+                    else:
+                        output = json.dumps({"structured_output": tag})
+                    return SimpleNamespace(returncode=0, stdout=output, stderr="")
+                adapter_type = providers.CodexCliProvider if vendor == "codex" else providers.ClaudeCliProvider
+                def create(config):
+                    self.assertEqual(config.provider, vendor)
+                    return adapter_type(config, runner=runner)
+                with patch.object(providers, "probe_codex_cli", return_value=capabilities["codex"]), \
+                     patch.object(providers, "probe_claude_cli", return_value=capabilities["claude"]), \
+                     patch.object(providers, "create_provider", side_effect=create) as factory, \
+                     patch.object(engine, "_downscaled_b64", return_value=("aGVsbG8=", "image/jpeg")), \
+                     patch.object(engine, "ocr", return_value="text"):
+                    result = engine.scan_images(self.root, provider="openai", model="api-model",
+                        analysis_mode="auto", with_image=image, consolidate=False)
+                self.assertEqual(factory.call_count, 1)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(result.new, 1)
+                self.assertEqual(result.actual_provider, "local" if timeout else vendor)
+                self.assertIsNone(result.actual_model)
+                self.assertTrue(result.external_transfer)
+                self.assertNotIn("secret", result.fallback_reason or "")
+                row = self.conn.execute("SELECT project FROM images").fetchone()
+                if not timeout:
+                    self.assertEqual(row["project"], "demo")

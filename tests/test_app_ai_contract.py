@@ -22,13 +22,15 @@ class AppAiContractTests(unittest.TestCase):
 
     def test_refresh_explains_the_selected_route_and_catalog(self):
         for marker in (
-            "providers.probe_codex_cli",
+            "providers.probe_cli_capabilities",
+            "Claude CLI",
             "providers.resolve_execution",
             "actual_provider",
             "actual_method",
             "engine.refresh_model_catalog",
             "외부 전송",
             "캐시",
+            "마지막 갱신",
         ):
             self.assertIn(marker, self.source)
 
@@ -69,9 +71,12 @@ class AppAiContractTests(unittest.TestCase):
         self.assertIn("저장된 모델을 찾을 수 없습니다", self.source)
         self.assertIn("confirm_missing_saved_model", self.source)
 
+    def test_saved_model_is_restored_to_the_input(self):
+        self.assertIn('value=ai_settings.get("analysis_model", "")', self.source)
+
     def test_automatic_anthropic_model_is_used_for_api_consent_preflight(self):
-        self.assertIn('engine.DEFAULT_MODEL if provider == "anthropic" and mode not in {"auto", "cli"}',
-                      self.source)
+        self.assertIn('engine.DEFAULT_MODEL if provider_in.value == "anthropic"', self.source)
+        self.assertIn('mode_in.value not in {"auto", "cli"}', self.source)
 
 
 if __name__ == "__main__":
