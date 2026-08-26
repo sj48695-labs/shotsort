@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 LANDING = Path(__file__).parents[1] / "docs" / "landing"
+PAGES_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "pages.yml"
 
 
 class LandingContractTests(unittest.TestCase):
@@ -28,12 +29,34 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn("공증 릴리스 준비 중", self.html)
         self.assertIn("공증 릴리스가 준비되면", self.html)
 
+    def test_landing_shows_a_real_app_demo_with_an_accessible_description(self):
+        screenshot = LANDING / "assets" / "shotsort-demo.png"
+        self.assertTrue(screenshot.is_file())
+        self.assertIn('src="assets/shotsort-demo.png"', self.html)
+        self.assertIn("실제 shotsort 앱 화면", self.html)
+        self.assertIn("분류", self.html)
+        self.assertIn("그룹", self.html)
+        self.assertIn("휴지통", self.html)
+
     def test_feedback_prefills_the_operational_signal_fields(self):
         self.assertIn('id="installed-version"', self.html)
         self.assertIn('id="installation-status"', self.html)
         self.assertIn("installed-version:", self.script)
         self.assertIn("installation-status:", self.script)
         self.assertIn("issues/new?", self.script)
+        self.assertNotIn('labels: "feedback"', self.script)
+        self.assertNotIn("labels=feedback", (Path(__file__).parents[1] / "README.md").read_text())
+
+    def test_pages_deployment_enables_pages_and_publishes_the_landing_artifact(self):
+        workflow = PAGES_WORKFLOW.read_text()
+        self.assertIn("pages: write", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("actions/configure-pages@v5", workflow)
+        self.assertIn("enablement: true", workflow)
+        self.assertIn("secrets.PAGES_SETUP_TOKEN || github.token", workflow)
+        self.assertIn("actions/upload-pages-artifact@v3", workflow)
+        self.assertIn("path: docs/landing", workflow)
+        self.assertIn("actions/deploy-pages@v4", workflow)
 
 
 if __name__ == "__main__":
