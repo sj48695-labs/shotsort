@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 LANDING = Path(__file__).parents[1] / "docs" / "landing"
+PAGES_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "pages.yml"
 
 
 class LandingContractTests(unittest.TestCase):
@@ -21,12 +22,26 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn('const releaseUrl = "' + url + '"', self.script)
 
     def test_privacy_faq_and_feedback_measurement_are_explained(self):
-        for required_text in ("로컬 OCR", "OCR 텍스트", "축소 이미지", "휴지통", "macOS 13 Ventura 이상", "feedback_submit", "install_success"):
+        for required_text in ("로컬 OCR", "OCR 텍스트", "축소 이미지", "휴지통", "macOS 13 Ventura 이상"):
             self.assertIn(required_text, self.html)
 
     def test_unsigned_release_is_not_presented_as_ready_for_installation(self):
         self.assertIn("공증 릴리스 준비 중", self.html)
         self.assertIn("공증 릴리스가 준비되면", self.html)
+        self.assertNotIn("무료로 다운로드", self.html)
+        self.assertNotIn("install_success", self.html)
+        self.assertNotIn("feedback_submit", self.html)
+        self.assertNotIn("xattr", self.html)
+        self.assertIn("공증된 최신 릴리스에서는", self.html)
+
+    def test_landing_shows_a_real_app_demo_with_an_accessible_description(self):
+        screenshot = LANDING / "assets" / "shotsort-demo.png"
+        self.assertTrue(screenshot.is_file())
+        self.assertIn('src="assets/shotsort-demo.png"', self.html)
+        self.assertIn("실제 shotsort 앱 화면", self.html)
+        self.assertIn("분류", self.html)
+        self.assertIn("그룹", self.html)
+        self.assertIn("휴지통", self.html)
 
     def test_feedback_prefills_the_operational_signal_fields(self):
         self.assertIn('id="installed-version"', self.html)
@@ -34,6 +49,19 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn("installed-version:", self.script)
         self.assertIn("installation-status:", self.script)
         self.assertIn("issues/new?", self.script)
+        self.assertNotIn('labels: "feedback"', self.script)
+        self.assertNotIn("labels=feedback", (Path(__file__).parents[1] / "README.md").read_text())
+
+    def test_pages_deployment_enables_pages_and_publishes_the_landing_artifact(self):
+        workflow = PAGES_WORKFLOW.read_text()
+        self.assertIn("pages: write", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("actions/configure-pages@v5", workflow)
+        self.assertIn("enablement: true", workflow)
+        self.assertIn("secrets.PAGES_SETUP_TOKEN || github.token", workflow)
+        self.assertIn("actions/upload-pages-artifact@v3", workflow)
+        self.assertIn("path: docs/landing", workflow)
+        self.assertIn("actions/deploy-pages@v4", workflow)
 
 
 if __name__ == "__main__":
