@@ -28,6 +28,7 @@ from preview_layout import (
     PREVIEW_IMAGE_WRAPPER_STYLE,
     PREVIEW_METADATA_CLASSES,
 )
+from preview_nav import PreviewNav, shortcut_action
 
 
 GROUP_PAGE_SIZE = 24
@@ -44,6 +45,9 @@ def index():
     # 드래그 중인 이미지 경로 목록(카드 → 다른 그룹으로 끌어 재분류). 서버측 단일 출처.
     # 선택(체크)된 카드를 끌면 선택 전체, 아니면 그 카드 하나만 담긴다.
     dragging: dict[str, list[str]] = {"paths": []}
+    # Space/Enter 미리보기용: 마지막으로 클릭·선택한 카드.
+    last_card: dict[str, dict | None] = {"it": None}
+    preview: dict = {"nav": None, "dialog": None, "render": None, "busy": False}
     # 스캔 진행률(워커 스레드가 갱신, UI 타이머가 읽음)
     progress = {"i": 0, "total": 0, "running": False}
 
@@ -277,12 +281,13 @@ def index():
                 checks[p].value = on
         update_sel()
 
-    def _on_check_click(e, p: str):
+    def _on_check_click(e, p: str, it: dict):
         """체크박스 클릭 — Shift+클릭이면 같은 그룹 내 앵커~현재까지 범위 선택.
 
         클릭 시점엔 이미 체크박스가 토글된 뒤라 checks[p].value 가 목표 상태다.
         그 상태를 앵커~현재 구간 전체에 적용한다(파일 탐색기식 범위 선택).
         """
+        last_card["it"] = it
         shift = e.args.get("shiftKey") if isinstance(e.args, dict) else bool(e.args)
         a = anchor["path"]
         if shift and a and a != p and path_group.get(a) == path_group.get(p):
@@ -313,12 +318,12 @@ def index():
                 )
                 img.props("draggable=false")  # 카드가 드래그되도록 이미지 기본 드래그 끔
                 img.tooltip("클릭=미리보기 · 끌어서 다른 그룹으로 이동")
-                img.on("click", lambda _, it=it: open_preview(it))
+                img.on("click", lambda _, it=it: _open_card(it))
             else:
                 ui.label("(미리보기 없음)").classes("text-xs text-gray-400")
             ui.label(Path(path).name).classes(
                 "text-xs truncate w-full cursor-pointer"
-            ).tooltip(Path(path).name).on("click", lambda _, it=it: open_preview(it))
+            ).tooltip(Path(path).name).on("click", lambda _, it=it: _open_card(it))
             if it["summary"]:
                 ui.label(it["summary"]).classes("text-xs text-gray-500 truncate w-full")
             cb = ui.checkbox(
@@ -327,7 +332,7 @@ def index():
                 on_change=lambda e: update_sel(),
             ).classes("text-xs")
             cb.tooltip("Shift+클릭: 같은 그룹 범위 선택")
-            cb.on("click", lambda e, p=path: _on_check_click(e, p), args=["shiftKey"])
+            cb.on("click", lambda e, p=path, item=it: _on_check_click(e, p, item), args=["shiftKey"])
             checks[path] = cb
 
     # ── 액션 ────────────────────────────────────────────────────────────────
@@ -572,27 +577,90 @@ def index():
             return
         ui.notify(f"{n}개를 압축했습니다: {dest}", type="positive")
 
+    def _group_items(it: dict) -> list[dict]:
+        name = path_group.get(it["path"]) or it.get("grp") or it.get("project")
+        if not name:
+            return [it]
+        return engine.list_groups().get(name) or [it]
+
+    def _open_card(it: dict):
+        last_card["it"] = it
+        anchor["path"] = it["path"]
+        open_preview(it)
+
     def open_preview(it: dict):
-        path = it["path"]
+        nav = PreviewNav.for_item(_group_items(it), it)
+        preview["nav"] = nav
         with ui.dialog().props("maximized") as dialog, ui.card().classes(PREVIEW_CARD_CLASSES):
+            preview["dialog"] = dialog
             with ui.row().classes(PREVIEW_HEADER_CLASSES):
-                ui.label(Path(path).name).classes("font-bold text-lg")
+                title = ui.label().classes("font-bold text-lg")
+                pos = ui.label().classes("text-sm text-gray-500")
                 ui.space()
-                ui.button("Finder 에서 보기", icon="folder_open",
-                          on_click=lambda: _reveal(path)).props("flat")
+                prev_btn = ui.button(icon="chevron_left", on_click=lambda: step(-1)).props(
+                    "flat round"
+                ).tooltip("이전")
+                next_btn = ui.button(icon="chevron_right", on_click=lambda: step(1)).props(
+                    "flat round"
+                ).tooltip("다음")
+                ui.button(
+                    "Finder 에서 보기",
+                    icon="folder_open",
+                    on_click=lambda: _reveal(nav.current["path"]),
+                ).props("flat")
                 ui.button(icon="close", on_click=dialog.close).props("flat round")
-            uri = engine.thumbnail_uri(path, max_edge=2200)
-            with ui.element("div").classes(PREVIEW_IMAGE_WRAPPER_CLASSES).style(
+            img_box = ui.element("div").classes(PREVIEW_IMAGE_WRAPPER_CLASSES).style(
                 PREVIEW_IMAGE_WRAPPER_STYLE
-            ):
-                if uri:
-                    ui.image(uri).classes(PREVIEW_IMAGE_CLASSES).props(PREVIEW_IMAGE_PROPS)
+            )
             with ui.column().classes(PREVIEW_METADATA_CLASSES):
-                meta = f"그룹: {it.get('grp') or it.get('project') or '-'}  ·  종류: {it.get('kind') or '-'}"
-                ui.label(meta).classes("text-sm text-gray-500")
-                if it.get("summary"):
-                    ui.label(it["summary"]).classes("text-sm text-gray-500")
-                ui.label(path).classes("text-xs text-gray-400 break-all")
+                meta = ui.label().classes("text-sm text-gray-500")
+                summary = ui.label().classes("text-sm text-gray-500")
+                path_lbl = ui.label().classes("text-xs text-gray-400 break-all")
+
+            def render_current():
+                cur = nav.current
+                title.text = Path(cur["path"]).name
+                pos.text = nav.position
+                prev_btn.set_enabled(nav.has_prev)
+                next_btn.set_enabled(nav.has_next)
+                img_box.clear()
+                uri = engine.thumbnail_uri(cur["path"], max_edge=2200)
+                with img_box:
+                    if uri:
+                        ui.image(uri).classes(PREVIEW_IMAGE_CLASSES).props(PREVIEW_IMAGE_PROPS)
+                meta.text = (
+                    f"그룹: {cur.get('grp') or cur.get('project') or '-'}  ·  종류: {cur.get('kind') or '-'}"
+                )
+                if cur.get("summary"):
+                    summary.text = cur["summary"]
+                    summary.set_visibility(True)
+                else:
+                    summary.text = ""
+                    summary.set_visibility(False)
+                path_lbl.text = cur["path"]
+
+            def step(delta: int):
+                moved = nav.next() if delta > 0 else nav.prev()
+                if moved:
+                    render_current()
+
+            preview["render"] = render_current
+            render_current()
+            # Arrow keys must not close or move dialog focus; navigation is handled globally.
+            dialog.on(
+                "keydown",
+                js_handler=(
+                    '(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") e.preventDefault(); }'
+                ),
+            )
+
+            def _on_preview_value(e):
+                if not e.value:
+                    preview["nav"] = None
+                    preview["dialog"] = None
+                    preview["render"] = None
+
+            dialog.on_value_change(_on_preview_value)
         dialog.open()
 
     def _reveal(path: str):
@@ -617,6 +685,53 @@ def index():
                 ui.button("취소", on_click=lambda: dialog.submit(False)).props("flat")
                 ui.button("휴지통으로", color="red", on_click=lambda: dialog.submit(True))
         return await dialog
+
+    async def _trash_preview():
+        nav = preview.get("nav")
+        if not nav or preview.get("busy"):
+            return
+        preview["busy"] = True
+        try:
+            path = nav.current["path"]
+            ok = await _confirm("1개를 휴지통으로 보낼까요? (복구 가능)")
+            if not ok:
+                return
+            try:
+                n = await run.io_bound(engine.trash, [path])
+            except Exception as e:
+                ui.notify(f"휴지통 이동 실패: {e}", type="negative")
+                return
+            ui.notify(f"{n}개를 휴지통으로 보냈습니다.", type="positive")
+            if preview.get("dialog"):
+                preview["dialog"].close()
+            update_stats()
+            render_groups()
+        finally:
+            preview["busy"] = False
+
+    async def on_key(e):
+        if not e.action.keydown or e.action.repeat:
+            return
+        if e.modifiers.alt or e.modifiers.ctrl or e.modifiers.meta:
+            return
+        if preview.get("busy"):
+            return
+        nav = preview.get("nav")
+        action = shortcut_action(e.key.name, preview_open=nav is not None)
+        if action == "prev" and nav:
+            if nav.prev() and preview.get("render"):
+                preview["render"]()
+        elif action == "next" and nav:
+            if nav.next() and preview.get("render"):
+                preview["render"]()
+        elif action == "close" and preview.get("dialog"):
+            preview["dialog"].close()
+        elif action == "delete" and nav:
+            await _trash_preview()
+        elif action == "open":
+            it = last_card.get("it")
+            if it:
+                open_preview(it)
 
     def on_scan_item(i, total, path, tag, error):
         progress["i"], progress["total"] = i, total  # 워커 스레드에서 호출
@@ -669,6 +784,7 @@ def index():
     trash_sel_btn.on_click(do_trash_selected)
     refresh_btn.on_click(lambda: (update_stats(), render_groups()))
     update_btn.on_click(do_update)
+    ui.keyboard(on_key=on_key, ignore=['input', 'select', 'textarea'])
     ui.timer(0.3, tick_progress)
     ui.timer(0.5, check_for_update, once=True)  # 로드 직후 1회 업데이트 체크
 
