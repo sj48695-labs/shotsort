@@ -22,12 +22,17 @@ class LandingContractTests(unittest.TestCase):
         self.assertIn('const releaseUrl = "' + url + '"', self.script)
 
     def test_privacy_faq_and_feedback_measurement_are_explained(self):
-        for required_text in ("로컬 OCR", "OCR 텍스트", "축소 이미지", "휴지통", "macOS 13 Ventura 이상", "feedback_submit", "install_success"):
+        for required_text in ("로컬 OCR", "OCR 텍스트", "축소 이미지", "휴지통", "macOS 13 Ventura 이상"):
             self.assertIn(required_text, self.html)
 
     def test_unsigned_release_is_not_presented_as_ready_for_installation(self):
         self.assertIn("공증 릴리스 준비 중", self.html)
         self.assertIn("공증 릴리스가 준비되면", self.html)
+        self.assertNotIn("무료로 다운로드", self.html)
+        self.assertNotIn("install_success", self.html)
+        self.assertNotIn("feedback_submit", self.html)
+        self.assertNotIn("xattr", self.html)
+        self.assertIn("공증된 최신 릴리스에서는", self.html)
 
     def test_landing_shows_a_real_app_demo_with_an_accessible_description(self):
         screenshot = LANDING / "assets" / "shotsort-demo.png"
