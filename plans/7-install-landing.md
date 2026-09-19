@@ -1,125 +1,82 @@
-# #7 서명·공증 설치 경로와 공개 제품 랜딩 운영 완료 계획
+# #7 서명·공증된 설치 경로와 공개 제품 랜딩으로 첫 사용자 획득 준비
 
-## 2026-09-18 fast-track
-
-- 착지 대상은 rescue PR #12. 같은 파일의 PR #10은 병합 후 닫는다. 새 브랜치에서 데모 이미지를 다시 만들지 않는다.
-- Pages는 이미 `https://sj48695-labs.github.io/shotsort/` 200. P3 운영 검증의 404 전제는 구식이다.
-- 카피: 히어로 `무료로 다운로드` 제거, 피드백 은어 제거, sha256은 공증 릴리스에 있을 때만 안내.
-- 공증 DMG(이슈 Phase 3)는 Apple secrets 없이 코드로 통과시키지 않는다. 이 PR은 #7을 close하지 않는다.
+- 플랜식별자: `066DF350`
+- 출처: GitHub issue #7 본문·댓글 (2026-09-18), PM 지침
+- 재검토: 기존 plan 전체를 최신 reopen 댓글과 대조해 재작성
 
 ## 재검토 결과
 
-이 계획은 기존 `plans/7-install-landing.md`와 2026-08-26의 최신 이슈 댓글을 대조해 다시 작성했다.
-
-- 유지할 완료 구현: `[P1]` Pages enablement/초기 배포 토큰 계약은 `b15e6d5`, `352f00f`에 이미 있고, feedback URL의 존재하지 않는 `feedback` label 제거와 README·계약 테스트는 `e56242a`에 이미 있다. 이 파일들을 같은 목적으로 다시 구현하지 않는다.
-- 정정: 이전 계획에 한때 `P2 (완료)`로 표시됐지만 실제 `docs/landing/assets/shotsort-demo.*`가 없고 랜딩에 실제 앱 화면도 없다. 따라서 P2는 미완료다.
-- 새 운영 사실: Pages API와 공개 URL은 아직 404이며, 마지막 Pages run `32788215746`은 `configure-pages`에서 실패했다. `enablement: true`와 `PAGES_SETUP_TOKEN` fallback 코드는 존재하지만 repository Pages를 GitHub Actions source로 허용하는 외부 설정이 선행돼야 한다.
-- 새 운영 사실: 공개 최신 Release는 여전히 `v0.1.1`(2026-06-15)의 `shotsort.dmg` 하나이며 checksum asset이 없다. 2026-08-26 댓글이 지목한 release run들 중 `32872470729`도 실패다. signed/notarized/stapled DMG와 clean-user smoke의 공개 증거가 아직 없다.
-- 이슈 본문의 완료 조건(무경고 설치, clean-user runbook, 최신 release 1-click, 처리 경계, download/feedback 신호)은 변하지 않았다. 그러므로 현재의 “공증 릴리스 준비 중” 문구와 unsigned 설치 fallback은 실제 운영 검증 전까지 유지한다.
-- PR #10은 `7-install-landing` → `main`의 닫힌 Draft PR이다. 이 이슈에서 새 브랜치나 새 PR을 만들지 않으며, 후속 통합은 기존 PR #10을 재개해 사용한다. 열린 rescue PR #12는 이 계획의 산출물이나 새 통합 경로로 취급하지 않는다.
-- 회의록 경로 `/tmp/pm-meeting-JqcUf3`는 현재 worktree 환경에 존재하지 않아 읽을 수 없었다. 위 최신 이슈 본문·댓글과 PM 지침을 계획 근거로 사용했다.
+- 완료 보존: `[P1]` 랜딩/릴리스 카피 정직성은 `54575dd`, `[P2]` 실제 앱 데모 착지는 `b0457f9` 및 PR #12 병합 커밋 `9f4d100`에 있다. `docs/landing/assets/shotsort-demo.png`도 현재 기본 브랜치에 있으므로 재구현하지 않는다.
+- 범위 정정: 최신 이슈 본문은 Pages가 200으로 동작한다고 명시하며, 최신 댓글은 P1·P2만 병합됐다고 확인한다. 이전 plan의 Pages 404 복구, PR #10/#12 정리, 데모 재생성, 별도 P4/P5는 stale이므로 제거한다.
+- 남은 범위: Apple Developer ID secrets 연결 후 새 `v*` 태그에서 signed → notarized → stapled DMG, checksum, clean-install smoke를 실제로 성공시킨다. secrets가 없거나 실패하면 코드로 초록을 만들지 않는다.
+- 회의록: 지정된 `/tmp/pm-meeting-KRZpbC`는 현재 환경에 없어 읽을 수 없었다. 이 plan은 최신 issue 본문·댓글과 사용자 제공 PM 지침을 근거로 한다.
 
 ## 현재 구조와 선례
 
-| 관심사 | 현재 파일/상태 | 따를 선례 |
+| 관심사 | 현재 파일·심볼 | 현재 상태 |
 | --- | --- | --- |
-| Pages 배포 | `.github/workflows/pages.yml`; `configure-pages@v5`, `enablement: true`, `PAGES_SETUP_TOKEN` fallback 구현 완료, 실제 Pages site는 미활성 | GitHub Actions source 활성화 → workflow dispatch → `upload-pages-artifact@v3` → `deploy-pages@v4` |
-| 릴리스 공증 | `.github/workflows/release.yml`, `build_app.sh`, `scripts/release/verify_dmg.sh`, `scripts/release/smoke_install.sh`; 코드 계약은 있으나 실제 release 실패 | `$RUNNER_TEMP/shotsort-signing.keychain-db`에서 sign → notarize → staple → checksum → clean smoke → publish |
-| 공개 문구/신호 | `docs/landing/index.html`, `app.js`, `README.md`; CTA는 `releases/latest?source=landing`, feedback은 label 없이 Issue prefill | 검증 전 “준비 중”, 검증 후에만 Gatekeeper 우회 불필요/asset 상태로 전환 |
-| 계약 회귀 | `tests/test_landing_contract.py`, `tests/test_build_app_contract.py` | macOS 도구·비밀값 없이 workflow와 공개 약속을 텍스트 계약으로 검증 |
+| 릴리스 진입점 | `.github/workflows/release.yml`의 `release` job | `v*` push에서 secrets preflight → 임시 keychain → build → checksum → smoke → release asset publish 순서가 구현됨 |
+| 서명·공증 | `build_app.sh`의 `SIGN_IDENTITY`, `NOTARY_PROFILE`, notarization block | Developer ID hardened-runtime sign, `notarytool submit`, `stapler staple/validate`, DMG `spctl` 검증이 구현됨 |
+| clean install | `scripts/release/smoke_install.sh`의 `DMG_PATH`, `WORK_DIR` | 임시 mount/Applications 경로에서 stapled DMG, copied app codesign·spctl을 검증함 |
+| checksum | `scripts/release/verify_dmg.sh`의 `CHECKSUM_PATH` | `dist/shotsort.dmg.sha256`를 생성함 |
+| 공개 약속 | `docs/landing/index.html`, `README.md`, `docs/SIGNING.md` | 공증 전에는 준비 중/소스 실행만 안내하고 우회 명령을 안내하지 않음 |
+| 회귀 계약 | `tests/test_build_app_contract.py`, `tests/test_landing_contract.py` | macOS 도구·실제 secrets 없이 command order와 공개 카피 경계를 검증함 |
 
 ## 범위와 비범위
 
-- #4, #11, #1의 앱 기능은 변경하지 않는다. P2의 캡처는 샘플 데이터로 실제 shotsort를 실행해 얻은 정적 증거만 사용하며, imagegen/mockup은 사용하지 않는다.
-- 인증서 값, Apple ID, app-specific password, 토큰은 채팅·문서·git·workflow 로그에 기록하지 않는다. GitHub Actions secrets와 runner의 임시 keychain만 사용한다.
-- Pages 설정, repository secrets 등록, 새 release tag 생성, 깨끗한 macOS 사용자에서의 수동 smoke는 운영자 권한이 필요한 검증 행동이다. 코드가 이를 대신했다고 주장하지 않는다.
-- worktree/브랜치 정리·전환·삭제와 새 브랜치/PR 생성은 하지 않는다.
+- #4, #11, #1의 앱 기능, Pages 설정, 랜딩 데모, 기존 카피를 변경하지 않는다.
+- 인증서 값, private key, Apple ID, app-specific password, token은 저장소·plan·로그에 기록하지 않는다.
+- 새 tag 생성, secrets 등록, GitHub Release 공개, clean macOS 사용자 확인은 운영 권한이 필요하다. 현재 `/plan` 단계에서는 실행하지 않는다.
+- Draft 상태를 유지한다. MR/PR Ready 전환, merge/auto-merge, worktree/브랜치 전환·삭제·정리는 하지 않는다.
 
-## 구현 phases
+## Phase별 구현 계획
 
-### P1 (완료) — Pages enablement와 피드백 URL 계약 복구
+### P1 (완료) — 랜딩·릴리스 카피 정직성
 
-완료 커밋: `b15e6d5`, `352f00f`, `e56242a`.
+완료 커밋: `54575dd`.
 
-- `.github/workflows/pages.yml`에 Pages enablement 및 첫 배포용 `PAGES_SETUP_TOKEN` fallback이 있다.
-- `README.md`, `docs/landing/app.js`, `tests/test_landing_contract.py`에서 허용되지 않은 `feedback` label 요구를 제거했다.
-- P1은 구현 완료일 뿐, 실제 Pages deployment 성공은 아래 P3의 운영 검증 전까지 완료로 판정하지 않는다.
+- `docs/landing/index.html`, `tests/test_landing_contract.py`에서 `무료로 다운로드`, 내부 측정 은어, 공증 전 checksum 약속, Gatekeeper 우회 안내를 제거했다.
+- 현재 공증 전 상태를 `공증 릴리스 준비 중`으로 표시하고 release CTA는 실제 latest release로 연결한다.
 
-### P2 (완료) — 실제 앱 스크린샷을 설치 전 랜딩에 추가
+### P2 (완료) — 실제 앱 데모를 랜딩에 착지
 
-변경 파일(최대 4개):
+완료 커밋: `b0457f9`, 병합 증거: `9f4d100`.
 
-- `docs/landing/assets/shotsort-demo.png`: 샘플 데이터로 실행한 실제 앱 UI 캡처. 개인 경로, API key, 사용자 이미지·OCR 텍스트는 마스킹한다.
-- `docs/landing/index.html`: hero 뒤에 실제 화면임을 명시한 `<figure>`와 분류·그룹·휴지통을 설명하는 alt text를 추가한다. 기존 최신 release CTA와 처리 경계 문구는 유지한다.
-- `docs/landing/styles.css`: 이미지의 desktop/mobile 반응형 폭, 테두리/그림자, focus·고대비에서의 가독성을 기존 랜딩 톤에 맞춘다.
-- `tests/test_landing_contract.py`: asset 존재, `<img>` 참조, 의미 있는 alt text와 기존 CTA/privacy/FAQ/feedback 계약을 검증한다.
+- `docs/landing/assets/shotsort-demo.png`, `docs/landing/index.html`, `docs/landing/styles.css`, `tests/test_landing_contract.py`에 실제 앱의 분류·그룹·휴지통 흐름과 접근 가능한 설명을 추가했다.
+- 이 asset과 landing 변경을 새 브랜치나 새 캡처로 다시 만들지 않는다.
 
-구현/검증:
+### P3 — Apple secrets 연결 후 공증 release를 운영 검증하고 공개 상태를 동기화
 
-1. 샘플 데이터에서 앱의 분류·그룹·휴지통 화면을 직접 확인하고, 위 민감 정보를 제거한 캡처를 만든다.
-2. 로컬 정적 서버에서 macOS desktop 및 mobile 폭으로 가로 스크롤·텍스트 겹침 없이 보이는지 검토한다.
-3. `python -m unittest tests.test_landing_contract -v`와 `python -m unittest discover -s tests -v`를 통과시킨다.
+선행 조건: 운영자가 GitHub Actions secrets `SIGN_IDENTITY`, `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD`를 등록한다. 선택 `KEYCHAIN_PASSWORD`는 임시 keychain 비밀번호용이다.
 
-커밋: `feat: [P2] #7 실제 앱 데모를 설치 랜딩에 추가`
+변경 파일(실패한 step이 코드 결함일 때만, 최대 5개):
 
-완료 증거: 분리된 임시 홈 디렉터리에서 샘플 이미지 4장을 로컬 OCR로 스캔하고, 분류된 그룹·그룹 폴더 정리·선택 항목 휴지통 UI가 보이는 실제 앱 화면을 `docs/landing/assets/shotsort-demo.png`으로 캡처했다. 개인 파일, OCR 텍스트, API 키는 포함하지 않았다.
-
-### P3 — 이미 구현된 Pages 경로의 실제 배포 검증
-
-코드 변경 없음(운영 phase). 실패 원인이 `Pages site` 404인 동안 workflow/README/token 계약을 중복 수정하지 않는다.
+- `.github/workflows/release.yml`의 `Check signing secrets`, `Configure signing keychain and notary profile`, asset publish 단계 — 실패한 첫 step이 workflow 순서·임시 keychain 처리 문제일 때만 수정한다. 선례: 현재 `Remove temporary signing credentials`의 `always()` cleanup.
+- `build_app.sh`의 signing/notarization block — hardened runtime, `notarytool`, staple, `spctl` 순서가 실제 실패 원인일 때만 수정한다. 선례: `tests/test_build_app_contract.py::test_signed_release_follows_sign_dmg_notarize_staple_verify_order`.
+- `scripts/release/smoke_install.sh`의 `DMG_PATH`/`WORK_DIR` 흐름 — clean install 실패 원인일 때만 수정한다. 선례: `test_smoke_validates_the_stapled_dmg_before_copying_the_app`.
+- `tests/test_build_app_contract.py` — 위 변경의 command order 또는 credential isolation 계약만 갱신한다.
+- `docs/landing/index.html`, `README.md`, `docs/SIGNING.md`, `tests/test_landing_contract.py` — 성공한 공개 release의 version, `shotsort.dmg`/`shotsort.dmg.sha256`, Gatekeeper 무우회 설치와 불일치할 때만 함께 갱신한다. 현행 공증 전 카피는 성공 증거 전까지 유지한다.
 
 운영 검증:
 
-1. repository Settings → Pages에서 Pages를 활성화하고 source를 **GitHub Actions**로 설정한다. 첫 배포 권한이 기본 `GITHUB_TOKEN`으로 부족하면 `PAGES_SETUP_TOKEN`만 Actions secret으로 등록한다.
-2. 기존 PR #10을 재개·통합한 뒤 `Deploy landing page`를 workflow dispatch로 실행한다. 새 PR은 만들지 않는다.
-3. run 성공과 deployment URL을 확인한 뒤 `https://sj48695-labs.github.io/shotsort/`가 200으로 열리는지 확인한다. 실제 화면에서 release CTA의 `source=landing` 및 feedback form prefill을 점검한다.
-4. 설정 후에도 실패하면 run URL·실패 단계·Pages API 상태만 이슈/PR 체크에 기록한다. 토큰 값이나 추측성 YAML 변경은 추가하지 않는다.
+1. secrets 등록 뒤 새 `v*` tag로 workflow를 실행한다. 첫 실패 step을 확인하고, 누락·권한 실패면 workflow를 바꾸지 않고 secret/Apple 권한 문제로 기록한다.
+2. 성공 run에서 `build_app.sh`의 sign → notarize → staple → `spctl`, `verify_dmg.sh` checksum, `smoke_install.sh` 임시 mount/Applications 검증이 모두 통과했는지 확인한다.
+3. 공개 GitHub Release에 같은 build의 `shotsort.dmg`와 `shotsort.dmg.sha256`가 있는지 확인하고 checksum 검증을 수행한다.
+4. 깨끗한 macOS 사용자에서 DMG 다운로드 → Applications 복사 → 첫 실행 → Gatekeeper 검증을 우회 명령 없이 확인한다.
+5. 위 공개 증거가 모두 있을 때만 landing/README/release notes의 준비 중 문구를 실제 release 상태로 동기화하고, `python -m unittest tests.test_landing_contract -v` 및 `python -m unittest discover -s tests -v`를 통과시킨다. 문서 변경이 있으면 별도 커밋 `docs: [P3] #7 검증된 공증 설치 상태 공개`으로 남긴다.
 
-완료 증거: 성공한 Pages run URL, 공개 URL 200, CTA/feedback 수동 확인 기록.
+완료 증거: 성공한 release run URL, 공개 release URL과 두 asset, checksum 결과, clean-user smoke 결과, 그리고 그 version과 일치하는 landing·README·release notes. 어느 하나라도 없으면 #7은 완료 처리하지 않고 현재 공증 전 카피를 유지한다.
 
-### P4 — notarized DMG의 실패 원인 한정 보강과 실제 release 검증
+## 테스트 계획
 
-변경 파일(문제 원인이 코드일 때만, 최대 5개):
-
-- `.github/workflows/release.yml`: 실패 step이 보여 주는 원인에 한해 secret preflight, 임시 keychain, `always()` cleanup 또는 publish 순서를 수정한다.
-- `build_app.sh`: Developer ID signing, hardened runtime, `notarytool` submit/staple/Gatekeeper 순서 문제일 때만 수정한다.
-- `scripts/release/smoke_install.sh`: stapled DMG 검사 후 새 mountpoint와 임시 Applications 경로의 clean install 검사 문제일 때만 수정한다.
-- `tests/test_build_app_contract.py`: 변경한 비밀 격리·명령 순서·smoke 계약만 갱신한다.
-- `docs/SIGNING.md`: secret **이름**, 등록 위치, 비밀을 노출하지 않는 runbook만 보강한다.
-
-운영 검증:
-
-1. 실패 run의 첫 실패 step을 확인한다. 누락/권한 문제면 workflow를 다시 고치지 않고 운영자가 `SIGN_IDENTITY`, `APPLE_CERTIFICATE_P12_BASE64`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_SPECIFIC_PASSWORD` 및 선택 `KEYCHAIN_PASSWORD`를 Actions secrets로 등록한다.
-2. 코드 변경 시 먼저 `python -m unittest tests.test_build_app_contract -v`와 전체 unittest를 통과시킨다.
-3. 새 `v*` tag로 release를 실행한다. 무서명 DMG를 우회용으로 publish하거나 기존 release를 대체하지 않는다.
-4. Release에 `shotsort.dmg`와 `shotsort.dmg.sha256`가 모두 존재하고, Actions의 codesign/notarize/staple/checksum/smoke가 모두 성공했는지 확인한다.
-5. 새 macOS 사용자에서 Release DMG를 다운로드해 checksum, Applications 복사, 첫 실행, `spctl`/Gatekeeper 무경고를 확인한다.
-
-커밋(코드 보강이 필요한 경우에만): `fix: [P4] #7 공증 release 운영 계약 보강`
-
-### P5 — 검증된 운영 상태만 공개 문구에 반영
-
-선행 조건: P2의 실제 캡처, P3의 공개 Pages deployment, P4의 성공한 notarized release와 clean-user smoke가 모두 증거로 확인돼야 한다. 하나라도 없으면 변경하지 않고 “공증 릴리스 준비 중” 및 현재 fallback을 유지한다.
-
-변경 파일(최대 4개):
-
-- `docs/landing/index.html`: 준비 중 문구를 실제 latest version의 Gatekeeper 우회 불필요 설치·checksum 안내로 교체한다.
-- `README.md`: unsigned fallback을 같은 verified release 상태로 갱신하고 landing/latest release 진입점을 유지한다.
-- `tests/test_landing_contract.py`: 준비 중 문구가 사라진 경우 notarization·일반 설치·checksum 약속을 모두 검증한다.
-- `docs/SIGNING.md`(필요 시): 비밀 없이 release version, run URL, clean-user smoke 완료 체크를 기록한다.
-
-구현/검증:
-
-1. 공개 landing/README의 모든 download CTA가 최신 release로 가고 두 asset이 존재하는지 확인한다.
-2. feedback prefill의 `installed-version`, `installation-status`와 `source=landing` 신호를 수동 확인한다.
-3. landing 계약과 전체 unittest를 통과시키고, Pages 재배포 후 공개 URL을 다시 확인한다.
-
-커밋: `docs: [P5] #7 검증된 공증 설치 상태 공개`
+1. 코드 수정이 생긴 경우 `python -m unittest tests.test_build_app_contract -v`로 signing/keychain/smoke command 계약을 확인한다.
+2. 공개 카피 수정이 생긴 경우 `python -m unittest tests.test_landing_contract -v`로 CTA·준비 상태·데모·feedback 계약을 확인한다.
+3. 문서 또는 workflow 변경 후 `python -m unittest discover -s tests -v`를 실행한다.
+4. 실제 release에서는 workflow의 codesign, notarization, staple, checksum, smoke 성공 및 clean-user 설치를 증거로 확인한다.
 
 ## 최종 완료 판정
 
-1. Pages deployment가 성공했고 공개 랜딩이 200으로 열리며 실제 앱 데모, 처리 경계, FAQ, feedback CTA가 보인다.
-2. 최신 GitHub Release에 Developer ID signed/notarized/stapled `shotsort.dmg`와 `shotsort.dmg.sha256`가 있다.
-3. 새 macOS 사용자에서 우회 명령 없이 drag-to-Applications, 첫 실행 및 Gatekeeper 검증이 통과한다.
-4. landing과 README가 위 최신 release 상태와 일치하고 “준비 중” 또는 unsigned fallback이 남아 있지 않다.
-5. `source=landing` download 신호와 feedback/install-status prefill이 동작하며, 존재하지 않는 label을 요구하지 않는다.
+1. 새 `v*` release에 Developer ID signed/notarized/stapled `shotsort.dmg`와 `shotsort.dmg.sha256`가 있다.
+2. CI와 깨끗한 macOS 사용자 모두 Gatekeeper 우회 없이 설치·첫 실행을 통과한다.
+3. 공개 landing, README, release notes가 성공한 asset/version과 일치한다.
+4. P1·P2의 로컬/AI 처리 경계, 실제 앱 데모, feedback 신호는 회귀하지 않는다.
