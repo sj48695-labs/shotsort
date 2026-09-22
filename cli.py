@@ -14,11 +14,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import engine
+import providers
 from engine import DEFAULT_MODEL, DEFAULT_SCAN_DIR
 
 
@@ -27,24 +29,36 @@ def cmd_scan(args):
     if not root.exists():
         sys.exit(f"경로 없음: {root}")
 
-    provider = args.provider
-    if args.local:
-        provider = "local"
-    elif provider is None:
-        provider = "anthropic" if engine.has_api_key() else "local"
-    if provider == "local":
-        print("로컬 분석: 외부 전송 없이 OCR + 프로젝트 규칙 + 화면 특징을 사용합니다.\n")
-    mode = f"{provider} API · 모델: {args.model or '(환경변수)'}" if provider != "local" else "로컬 분석"
+    requested = "local" if args.local else (args.provider or "auto")
+    legacy_provider = requested if requested in {"anthropic", "openai", "xai"} else None
+    selected_provider = legacy_provider or args.direct_provider
+    if not selected_provider:
+        env_provider = os.environ.get("SHOTSORT_AI_PROVIDER", "").strip().lower()
+        selected_provider = env_provider if env_provider in {"anthropic", "openai", "xai"} else "anthropic"
+    mode = "direct" if legacy_provider else requested
+    if mode == "local":
+        selected_provider = "local"
+
+    # The flag is intentionally required for each non-interactive API execution.
+    # Saving the scoped preference makes the user's affirmative choice inspectable
+    # in the app, but an old saved value must never silently authorize this CLI run.
+    api_consent = bool(args.allow_api_transfer)
+    if api_consent and mode in {"api", "direct"}:
+        engine.set_api_consent(selected_provider, with_image=args.with_image, allowed=True)
+
+    print(f"분석 시작: requested_mode={mode}")
+    if mode in {"api", "direct"} and not api_consent:
+        print("API 후보는 감지되더라도 --allow-api-transfer 없이는 실행하지 않고 로컬 분석으로 fallback 합니다.")
 
     printed = False
 
     def on_item(i, total, path, tag, error):
         nonlocal printed
         if not printed:
-            print(f"이미지 {total}개 발견. 분석 중... ({mode})")
+            print(f"이미지 {total}개 발견. 분석 중...")
             printed = True
         if error is not None:
-            print(f"  [{i}/{total}] 분류 실패 {path.name}: {error}", file=sys.stderr)
+            print(f"  [{i}/{total}] 분류 실패 {path.name}: {providers.mask_secret(error)}", file=sys.stderr)
             return
         mark = "  🗑 삭제후보" if tag["deletable"] else ""
         print(f"  [{i}/{total}] {path.name} → {tag['project']} ({tag['kind']}){mark}")
@@ -52,25 +66,47 @@ def cmd_scan(args):
     hints = [h for h in (args.projects or "").split(",") if h.strip()]
     res = engine.scan_images(
         root,
-        provider=provider,
+        provider=selected_provider,
         model=args.model,
         with_image=args.with_image,
+        analysis_mode=mode,
+        api_consent=api_consent,
         force=args.force,
         project_hints=hints,
         on_item=on_item,
     )
 
     if res.total == 0:
+        _print_execution_status("실행 결과", res)
         print("이미지를 찾지 못했습니다.")
         return
     if not printed:
-        print(f"이미지 {res.total}개 발견. 분석 중... ({mode})")
+        print(f"이미지 {res.total}개 발견. 분석 중...")
 
-    print(f"\n분석 완료: 신규 {res.new}개, 캐시 스킵 {res.skipped}개")
+    _print_execution_status("실행 결과", res)
+    print(f"분석 완료: 신규 {res.new}개, 캐시 스킵 {res.skipped}개")
     if res.consolidate_error:
-        print(f"그룹 정규화 실패(개별 분류는 저장됨): {res.consolidate_error}", file=sys.stderr)
+        print(f"그룹 정규화 실패(개별 분류는 저장됨): {providers.mask_secret(res.consolidate_error)}", file=sys.stderr)
     else:
         print("완료. `shotsort groups` 로 확인하세요.")
+
+
+def _print_execution_status(label, result) -> None:
+    """Print only the execution facts that are safe and actionable in a terminal."""
+    method = getattr(result.actual_method, "value", result.actual_method)
+    catalog_cache = bool(getattr(result, "catalog_from_cache",
+                                 getattr(result, "model_catalog_from_cache", False)))
+    fields = [
+        f"provider={providers.mask_secret(result.actual_provider)}",
+        f"method={providers.mask_secret(method)}",
+        f"model={providers.mask_secret(result.actual_model) if result.actual_model else 'auto'}",
+        f"external_transfer={'yes' if result.external_transfer else 'no'}",
+        f"catalog={'cache' if catalog_cache else 'fresh'}",
+    ]
+    reason = getattr(result, "fallback_reason", None)
+    if reason:
+        fields.append(f"fallback={providers.mask_secret(reason)}")
+    print(f"{label}: " + " · ".join(fields))
 
 
 def cmd_groups(args):
@@ -289,10 +325,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("scan", help="이미지 분석(캐시되지 않은 것만)")
     sp.add_argument("path", nargs="?", default=str(DEFAULT_SCAN_DIR), help=f"스캔 경로 (기본 {DEFAULT_SCAN_DIR})")
-    sp.add_argument("--provider", choices=["local", "anthropic", "openai", "xai"],
-                    help="분류 방식 (기본: API 키가 있으면 anthropic, 아니면 local)")
-    sp.add_argument("--model", help=f"API 모델명 (Anthropic 기본 {DEFAULT_MODEL}; 다른 공급자는 필수)")
+    sp.add_argument("--provider", default="auto",
+                    choices=["auto", "cli", "api", "direct", "local", "anthropic", "openai", "xai"],
+                    help="분석 방식 (auto: Codex CLI → Claude CLI(텍스트) → 동의된 API → local; 기존 공급자명은 direct 단축값)")
+    sp.add_argument("--direct-provider", choices=["anthropic", "openai", "xai"],
+                    help="api/direct에 사용할 API 공급자 (기본: SHOTSORT_AI_PROVIDER 또는 anthropic)")
+    sp.add_argument("--model", help=f"API/CLI 모델명 (Anthropic 기본 {DEFAULT_MODEL}; 다른 API는 필수)")
     sp.add_argument("--with-image", action="store_true", help="OCR 텍스트와 함께 축소 이미지를 선택한 API에 전송")
+    sp.add_argument("--allow-api-transfer", action="store_true",
+                    help="이번 비대화식 실행의 API 외부 전송에 명시 동의하고 공급자·이미지 범위 동의를 저장")
     sp.add_argument("--local", action="store_true", help="API 키가 있어도 로컬 휴리스틱 모드 강제(무료/오프라인)")
     sp.add_argument("--force", action="store_true", help="캐시 무시하고 전부 재분석")
     sp.add_argument("--projects", help="알려진 프로젝트명(쉼표 구분). OCR 에 이 단어가 있으면 해당 프로젝트로 묶음. 예: act-server,hitc,zipath")
