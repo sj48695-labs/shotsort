@@ -164,6 +164,54 @@ def save_project(
             "characteristics": characteristics, "enabled": bool(enabled)}
 
 
+def update_project(
+    old_name: str,
+    *,
+    name: str,
+    aliases: list[str] | str | None,
+    characteristics: str = "",
+) -> dict:
+    """저장 프로젝트 규칙을 고친다. 이름을 바꾸면 예전 이름을 별칭에 남긴다.
+
+    enabled와 이미 묶인 이미지 그룹은 건드리지 않는다.
+    """
+    old_name = (old_name or "").strip()
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("프로젝트 이름은 비워 둘 수 없습니다")
+    conn = db()
+    row = conn.execute(
+        "SELECT name, aliases, characteristics, enabled FROM saved_projects WHERE name=?",
+        (old_name,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("프로젝트를 찾지 못했습니다")
+    stored_name = row["name"]
+    renamed = stored_name.casefold() != name.casefold()
+    if renamed:
+        clash = conn.execute(
+            "SELECT 1 FROM saved_projects WHERE name=? AND name != ?",
+            (name, stored_name),
+        ).fetchone()
+        if clash:
+            raise ValueError("이미 있는 프로젝트명입니다")
+        clean_aliases = _normalise_aliases([*_normalise_aliases(aliases), stored_name])
+    else:
+        clean_aliases = _normalise_aliases(aliases)
+    characteristics = (characteristics or "").strip()
+    conn.execute(
+        "UPDATE saved_projects SET name=?, aliases=?, characteristics=? WHERE name=?",
+        (name, json.dumps(clean_aliases, ensure_ascii=False), characteristics, stored_name),
+    )
+    conn.commit()
+    return {
+        "name": name,
+        "aliases": clean_aliases,
+        "characteristics": characteristics,
+        "enabled": bool(row["enabled"]),
+    }
+
+
 def resolve_project_rules(
     conn: sqlite3.Connection | None = None, *, enabled_only: bool = True
 ) -> list[dict]:
@@ -1353,17 +1401,44 @@ def collect_paths(group: str | None, deletable: bool) -> list[str]:
     return [r["path"] for r in rows if Path(r["path"]).exists()]
 
 
-def move_to_trash(paths: list[str]) -> bool:
-    """macOS 휴지통으로 이동(복구 가능). Finder 의 put-back 메타 유지."""
+@dataclass(frozen=True)
+class TrashResult:
+    """한 번의 휴지통 요청에 대한 파일별 결과.
+
+    일부 파일이 실패하거나 없어도 나머지는 이동한다.
+    """
+
+    trashed: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+
+def _finder_delete(paths: list[str]) -> None:
+    """Finder 에 경로 목록을 넘겨 휴지통으로 보낸다. 실패 시 CalledProcessError."""
+    items = ", ".join(
+        '(POSIX file "%s" as alias)' % p.replace('"', '\\"') for p in paths
+    )
+    script = f'tell application "Finder" to delete {{{items}}}'
+    subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
+
+
+def move_to_trash(paths: list[str]) -> list[str]:
+    """존재하는 파일을 macOS 휴지통으로(복구 가능, put-back 메타 유지).
+
+    일괄 삭제가 실패하면(-10010 포함) 파일별로 다시 시도한다.
+    반환: 실제로 디스크에서 사라진 경로.
+    """
     if not paths:
-        return True
-    posix = ", ".join('POSIX file "%s"' % p.replace('"', '\\"') for p in paths)
-    script = f'tell application "Finder" to delete {{{posix}}}'
+        return []
     try:
-        subprocess.run(["osascript", "-e", script], check=True, capture_output=True, text=True)
-        return True
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"휴지통 이동 실패: {e.stderr}")
+        _finder_delete(paths)
+    except subprocess.CalledProcessError:
+        for path in paths:
+            try:
+                _finder_delete([path])
+            except subprocess.CalledProcessError:
+                pass
+    return [p for p in paths if not Path(p).exists()]
 
 
 def forget_paths(paths: list[str]) -> None:
@@ -1375,13 +1450,37 @@ def forget_paths(paths: list[str]) -> None:
     conn.commit()
 
 
-def trash(paths: list[str]) -> int:
-    """주어진 경로들을 휴지통으로 보내고 DB 에서 제거. 반환: 처리한 개수."""
+def trash_summary(result: TrashResult) -> str:
+    """GUI/CLI 가 그대로 보여줄 휴지통 결과 문구. 실패 접두어를 중복하지 않는다."""
+    parts: list[str] = []
+    if result.trashed:
+        parts.append(f"{len(result.trashed)}개를 휴지통으로 보냈습니다")
+    if result.missing:
+        names = ", ".join(Path(p).name for p in result.missing)
+        parts.append(f"{len(result.missing)}개는 원본 파일이 없습니다 ({names})")
+    if result.failed:
+        names = ", ".join(Path(p).name for p in result.failed)
+        parts.append(f"{len(result.failed)}개는 보내지 못했습니다 ({names})")
+    if not parts:
+        return "대상이 없습니다."
+    return ". ".join(parts) + "."
+
+
+def trash(paths: list[str]) -> TrashResult:
+    """주어진 경로를 휴지통으로 보내고 DB 에서 제거. 파일별 결과를 반환한다."""
     if not paths:
-        return 0
-    move_to_trash(paths)
-    forget_paths(paths)
-    return len(paths)
+        return TrashResult()
+    missing = [p for p in paths if not Path(p).exists()]
+    existing = [p for p in paths if Path(p).exists()]
+    trashed = move_to_trash(existing)
+    gone = set(trashed)
+    failed = [p for p in existing if p not in gone]
+    forget_paths(trashed + missing)
+    return TrashResult(
+        trashed=tuple(trashed),
+        missing=tuple(missing),
+        failed=tuple(failed),
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

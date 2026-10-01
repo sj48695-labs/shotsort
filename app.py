@@ -18,6 +18,7 @@ from pathlib import Path
 from nicegui import run, ui
 
 import engine
+from group_select import apply_select, range_paths, selected_bytes, selected_in_group
 from lazy_groups import GroupPage
 from preview_layout import (
     PREVIEW_CARD_CLASSES,
@@ -36,8 +37,11 @@ GROUP_PAGE_SIZE = 24
 
 @ui.page("/")
 def index():
-    # 현재 렌더된 카드의 체크박스 핸들 (경로 → checkbox) = 선택 상태의 단일 출처.
+    # 렌더된 카드의 체크박스 핸들. 선택 상태의 출처는 selected 집합이다.
     checks: dict[str, "ui.checkbox"] = {}
+    selected: set[str] = set()
+    group_actions: dict[str, dict] = {}
+    item_sizes: dict[str, int] = {}
     # Shift+클릭 범위 선택용: 렌더 순서(그룹별)와 마지막으로 클릭한 앵커.
     group_order: dict[str, list[str]] = {}  # 그룹명 → 그 그룹의 경로 순서
     path_group: dict[str, str] = {}         # 경로 → 그룹명
@@ -159,15 +163,25 @@ def index():
                 chip.tooltip(detail)
 
     def selected_paths() -> list[str]:
-        return [p for p, cb in checks.items() if cb.value]
+        return list(selected)
 
     def update_sel():
-        n = len(selected_paths())
+        n = len(selected)
         sel_lbl.text = f"선택 {n}개"
         trash_sel_btn.set_enabled(bool(n))
+        for name, widgets in group_actions.items():
+            paths = selected_in_group(group_order.get(name, []), selected)
+            nbytes = selected_bytes(item_sizes, paths)
+            widgets["lbl"].text = (
+                f"선택 {len(paths)}개 ({engine.human_mb(nbytes)})" if paths else "선택 0개"
+            )
+            widgets["btn"].set_enabled(bool(paths))
 
     def render_groups():
         checks.clear()
+        selected.clear()
+        group_actions.clear()
+        item_sizes.clear()
         group_order.clear()
         path_group.clear()
         anchor["path"] = None
@@ -194,7 +208,10 @@ def index():
                     group_order[g] = paths
                     for p in paths:
                         path_group[p] = g
-                    with ui.row().classes("gap-2 mb-2 items-center"):
+                    item_sizes.update(
+                        {it["path"]: int(it.get("size") or 0) for it in items}
+                    )
+                    with ui.row().classes("gap-2 mb-2 items-center flex-wrap"):
                         ui.button(
                             "이 그룹 전체선택",
                             on_click=lambda _, ps=paths: select_paths(ps, True),
@@ -202,6 +219,15 @@ def index():
                         ui.button(
                             "해제", on_click=lambda _, ps=paths: select_paths(ps, False)
                         ).props("flat dense")
+                        group_sel_lbl = ui.label("선택 0개").classes("text-xs text-primary")
+                        group_trash_sel = ui.button(
+                            "선택 삭제",
+                            icon="delete",
+                            color="red",
+                            on_click=lambda _, name=g: do_trash_group_selected(name),
+                        ).props("flat dense")
+                        group_trash_sel.set_enabled(False)
+                        group_actions[g] = {"lbl": group_sel_lbl, "btn": group_trash_sel}
                         ui.button(
                             "이름 변경", icon="edit",
                             on_click=lambda _, name=g: do_rename_group(name),
@@ -276,9 +302,14 @@ def index():
             render_groups()
 
     def select_paths(paths: list[str], on: bool):
+        apply_select(selected, paths, on)
         for p in paths:
             if p in checks:
                 checks[p].value = on
+        update_sel()
+
+    def _on_check_change(path: str, value: bool):
+        apply_select(selected, [path], bool(value))
         update_sel()
 
     def _on_check_click(e, p: str, it: dict):
@@ -286,23 +317,19 @@ def index():
 
         클릭 시점엔 이미 체크박스가 토글된 뒤라 checks[p].value 가 목표 상태다.
         그 상태를 앵커~현재 구간 전체에 적용한다(파일 탐색기식 범위 선택).
+        아직 안 그린 카드도 selected 집합에 넣는다.
         """
         last_card["it"] = it
         shift = e.args.get("shiftKey") if isinstance(e.args, dict) else bool(e.args)
         a = anchor["path"]
+        target = bool(checks[p].value) if p in checks else p in selected
         if shift and a and a != p and path_group.get(a) == path_group.get(p):
-            order = group_order.get(path_group[p], [])
-            try:
-                i, j = order.index(a), order.index(p)
-            except ValueError:
-                i = j = -1
-            if i >= 0 and j >= 0:
-                lo, hi = (i, j) if i <= j else (j, i)
-                target = checks[p].value
-                for q in order[lo : hi + 1]:
-                    if q in checks:
-                        checks[q].value = target
-                update_sel()
+            span = range_paths(group_order.get(path_group[p], []), a, p)
+            apply_select(selected, span, target)
+            for q in span:
+                if q in checks:
+                    checks[q].value = target
+            update_sel()
         anchor["path"] = p
 
     def _thumb_card(it: dict):
@@ -328,8 +355,8 @@ def index():
                 ui.label(it["summary"]).classes("text-xs text-gray-500 truncate w-full")
             cb = ui.checkbox(
                 "삭제 선택" + ("  🗑" if it["deletable"] else ""),
-                value=False,
-                on_change=lambda e: update_sel(),
+                value=path in selected,
+                on_change=lambda e, p=path: _on_check_change(p, e.value),
             ).classes("text-xs")
             cb.tooltip("Shift+클릭: 같은 그룹 범위 선택")
             cb.on("click", lambda e, p=path, item=it: _on_check_click(e, p, item), args=["shiftKey"])
@@ -373,6 +400,28 @@ def index():
         update_stats()
         render_groups()
 
+    def _notify_trash(result: engine.TrashResult):
+        if result.failed and not result.trashed:
+            kind = "negative"
+        elif result.failed or result.missing:
+            kind = "warning"
+        else:
+            kind = "positive"
+        ui.notify(engine.trash_summary(result), type=kind)
+
+    async def _run_trash(paths: list[str], *, close_preview: bool = False):
+        try:
+            result = await run.io_bound(engine.trash, paths)
+        except Exception as e:
+            ui.notify(str(e), type="negative")
+            return
+        _notify_trash(result)
+        gone = set(result.trashed) | set(result.missing)
+        if close_preview and gone.intersection(paths) and preview.get("dialog"):
+            preview["dialog"].close()
+        update_stats()
+        render_groups()
+
     async def do_trash_selected():
         paths = sorted(selected_paths())
         if not paths:
@@ -380,14 +429,20 @@ def index():
         ok = await _confirm(f"{len(paths)}개를 휴지통으로 보낼까요? (복구 가능)")
         if not ok:
             return
-        try:
-            n = await run.io_bound(engine.trash, paths)
-        except Exception as e:
-            ui.notify(f"휴지통 이동 실패: {e}", type="negative")
+        await _run_trash(paths)
+
+    async def do_trash_group_selected(name: str):
+        paths = selected_in_group(group_order.get(name, []), selected)
+        if not paths:
             return
-        ui.notify(f"{n}개를 휴지통으로 보냈습니다.", type="positive")
-        update_stats()
-        render_groups()
+        nbytes = selected_bytes(item_sizes, paths)
+        ok = await _confirm(
+            f"'{name}'에서 선택한 {len(paths)}개({engine.human_mb(nbytes)})를 "
+            "휴지통으로 보낼까요? (복구 가능)"
+        )
+        if not ok:
+            return
+        await _run_trash(paths)
 
     async def do_trash_group(name: str):
         paths = engine.collect_paths(name, deletable=False)
@@ -396,17 +451,10 @@ def index():
         ok = await _confirm(f"'{name}' 그룹 {len(paths)}개를 휴지통으로 보낼까요? (복구 가능)")
         if not ok:
             return
-        try:
-            n = await run.io_bound(engine.trash, paths)
-        except Exception as e:
-            ui.notify(f"휴지통 이동 실패: {e}", type="negative")
-            return
-        ui.notify(f"{n}개를 휴지통으로 보냈습니다.", type="positive")
-        update_stats()
-        render_groups()
+        await _run_trash(paths)
 
     async def manage_projects():
-        rows = engine.list_projects()
+        editing: dict[str, str | None] = {"name": None}
         with ui.dialog() as dialog, ui.card().classes("w-full max-w-2xl"):
             with ui.row().classes("items-start w-full"):
                 with ui.column().classes("gap-0"):
@@ -428,31 +476,69 @@ def index():
                 "색상·형태 특징은 Claude 모드에서 ‘썸네일도 전송’을 켰을 때 사용됩니다."
             ).classes("text-xs text-amber-700")
 
+            def reset_form():
+                editing["name"] = None
+                name_in.value = ""
+                aliases_in.value = ""
+                characteristics_in.value = ""
+                save_btn.text = "저장"
+                cancel_btn.set_visibility(False)
+
+            def load_project(project: dict):
+                editing["name"] = project["name"]
+                name_in.value = project["name"]
+                aliases_in.value = ", ".join(project["aliases"])
+                characteristics_in.value = project["characteristics"] or ""
+                save_btn.text = "수정 저장"
+                cancel_btn.set_visibility(True)
+
             async def save_current():
                 name = (name_in.value or "").strip()
                 if not name:
                     ui.notify("프로젝트명을 입력하세요.", type="warning")
                     return
                 aliases = [a.strip() for a in (aliases_in.value or "").split(",") if a.strip()]
-                await run.io_bound(
-                    engine.save_project,
-                    name,
-                    aliases,
-                    True,
-                    (characteristics_in.value or "").strip(),
-                )
-                dialog.submit(True)
+                characteristics = (characteristics_in.value or "").strip()
+                old_name = editing["name"]
+                try:
+                    if old_name:
+                        await run.io_bound(
+                            lambda: engine.update_project(
+                                old_name,
+                                name=name,
+                                aliases=aliases,
+                                characteristics=characteristics,
+                            )
+                        )
+                    else:
+                        await run.io_bound(
+                            engine.save_project, name, aliases, True, characteristics
+                        )
+                except ValueError as e:
+                    ui.notify(str(e), type="warning")
+                    return
+                reset_form()
+                render_list()
+                render_projects()
+                ui.notify("프로젝트 설정을 저장했습니다. 다음 스캔부터 적용됩니다.", type="positive")
 
-            with ui.row().classes("justify-end w-full"):
-                ui.button("저장", icon="add", on_click=save_current)
+            with ui.row().classes("justify-end w-full gap-2"):
+                cancel_btn = ui.button("취소", on_click=reset_form).props("flat")
+                cancel_btn.set_visibility(False)
+                save_btn = ui.button("저장", icon="add", on_click=save_current)
 
-            if rows:
-                ui.separator()
-                with ui.column().classes("w-full gap-2 max-h-72 overflow-auto"):
-                    for project in rows:
-                        with ui.row().classes("items-center w-full p-2 border rounded"):
+            ui.separator()
+            list_box = ui.column().classes("w-full gap-2 max-h-72 overflow-auto")
+
+            def render_list():
+                list_box.clear()
+                with list_box:
+                    for project in engine.list_projects():
+                        with ui.row().classes(
+                            "items-center w-full p-2 border rounded flex-wrap gap-1"
+                        ):
                             toggle = ui.switch(value=project["enabled"])
-                            with ui.column().classes("gap-0 grow"):
+                            with ui.column().classes("gap-0 grow min-w-0"):
                                 ui.label(project["name"]).classes("font-medium")
                                 ui.label(", ".join(project["aliases"]) or "별칭 없음").classes(
                                     "text-xs text-gray-500"
@@ -462,20 +548,33 @@ def index():
                                         "text-xs text-amber-700"
                                     )
                             toggle.on_value_change(
-                                lambda e, name=project["name"]: engine.set_project_enabled(name, e.value)
+                                lambda e, name=project["name"]: (
+                                    engine.set_project_enabled(name, e.value),
+                                    render_projects(),
+                                )
                             )
 
                             async def remove(name=project["name"]):
                                 await run.io_bound(engine.delete_project, name)
-                                dialog.submit(True)
+                                if editing["name"] == name:
+                                    reset_form()
+                                render_list()
+                                render_projects()
+                                ui.notify(
+                                    "프로젝트 설정을 저장했습니다. 다음 스캔부터 적용됩니다.",
+                                    type="positive",
+                                )
 
-                            ui.button(icon="delete", on_click=remove).props("flat round color=grey").tooltip(
-                                f"{project['name']} 삭제"
-                            )
-        changed = await dialog
-        if changed:
-            render_projects()
-            ui.notify("프로젝트 설정을 저장했습니다. 다음 스캔부터 적용됩니다.", type="positive")
+                            ui.button(
+                                icon="edit",
+                                on_click=lambda _, project=project: load_project(project),
+                            ).props("flat round").tooltip(f"{project['name']} 수정")
+                            ui.button(icon="delete", on_click=remove).props(
+                                "flat round color=grey"
+                            ).tooltip(f"{project['name']} 삭제")
+
+            render_list()
+        await dialog
 
     async def do_organize_selected():
         groups = engine.list_groups()
@@ -696,16 +795,7 @@ def index():
             ok = await _confirm("1개를 휴지통으로 보낼까요? (복구 가능)")
             if not ok:
                 return
-            try:
-                n = await run.io_bound(engine.trash, [path])
-            except Exception as e:
-                ui.notify(f"휴지통 이동 실패: {e}", type="negative")
-                return
-            ui.notify(f"{n}개를 휴지통으로 보냈습니다.", type="positive")
-            if preview.get("dialog"):
-                preview["dialog"].close()
-            update_stats()
-            render_groups()
+            await _run_trash([path], close_preview=True)
         finally:
             preview["busy"] = False
 

@@ -100,11 +100,11 @@ def cmd_trash(args):
             print("취소됨.")
             return
     try:
-        n = engine.trash(paths)
+        result = engine.trash(paths)
     except RuntimeError as e:
         print(str(e), file=sys.stderr)
         return
-    print(f"{n}개를 휴지통으로 보냈습니다.")
+    print(engine.trash_summary(result))
 
 
 def _non_negative_int(value: str) -> int:
@@ -201,11 +201,11 @@ def cmd_similarity(args):
             print("취소됨.")
             return
     try:
-        count = engine.trash(paths)
+        result = engine.trash(paths)
     except RuntimeError as error:
         print(str(error), file=sys.stderr)
         return
-    print(f"{count}개를 휴지통으로 보냈습니다.")
+    print(engine.trash_summary(result))
 
 
 def cmd_open(args):

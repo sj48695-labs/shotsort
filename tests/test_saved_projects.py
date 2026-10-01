@@ -57,6 +57,62 @@ class SavedProjectsTest(unittest.TestCase):
             {"name": "hitc", "aliases": ["hitc.io"], "characteristics": "",
              "enabled": True}])
 
+    def test_update_project_keeps_enabled_and_changes_aliases(self):
+        engine.save_project("hitc", ["hitc.io"], enabled=False, characteristics="파란 화면")
+        updated = engine.update_project(
+            "hitc", name="hitc", aliases=["hitc client"], characteristics="초록 화면"
+        )
+        self.assertEqual(updated, {
+            "name": "hitc", "aliases": ["hitc client"],
+            "characteristics": "초록 화면", "enabled": False,
+        })
+        self.assertEqual(engine.list_projects(), [updated])
+
+    def test_update_project_renames_and_keeps_old_name_as_alias(self):
+        engine.save_project("act", ["act chat"], enabled=False, characteristics="주황")
+        updated = engine.update_project(
+            "act", name="act-server", aliases=["act chat"], characteristics="주황"
+        )
+        self.assertEqual(updated["name"], "act-server")
+        self.assertEqual(updated["enabled"], False)
+        self.assertEqual(updated["aliases"], ["act chat", "act"])
+        self.assertEqual(engine.list_projects(), [updated])
+
+    def test_update_project_does_not_duplicate_old_name_alias(self):
+        engine.save_project("act", ["act", "act chat"])
+        updated = engine.update_project(
+            "act", name="act-server", aliases=["act", "act chat"], characteristics=""
+        )
+        self.assertEqual(updated["aliases"], ["act", "act chat"])
+
+    def test_update_project_rejects_name_collision(self):
+        engine.save_project("act", [])
+        engine.save_project("hitc", ["hitc.io"], enabled=False, characteristics="파란 화면")
+        with self.assertRaises(ValueError) as ctx:
+            engine.update_project("hitc", name="act", aliases=["hitc.io"], characteristics="파란 화면")
+        self.assertEqual(str(ctx.exception), "이미 있는 프로젝트명입니다")
+        self.assertEqual(engine.list_projects(), [
+            {"name": "act", "aliases": [], "characteristics": "", "enabled": True},
+            {"name": "hitc", "aliases": ["hitc.io"], "characteristics": "파란 화면",
+             "enabled": False},
+        ])
+
+    def test_update_project_rejects_missing_and_empty_names(self):
+        engine.save_project("act", [])
+        with self.assertRaises(ValueError) as ctx:
+            engine.update_project("missing", name="new", aliases=[], characteristics="")
+        self.assertIn("찾지", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            engine.update_project("act", name="  ", aliases=[], characteristics="")
+        self.assertEqual(str(ctx.exception), "프로젝트 이름은 비워 둘 수 없습니다")
+
+    def test_update_project_does_not_rename_existing_groups(self):
+        add_image(self.conn, self.root / "a.png", project="act", grp="act")
+        engine.save_project("act", [])
+        engine.update_project("act", name="act-server", aliases=[], characteristics="")
+        row = self.conn.execute("SELECT project, grp, manual_group FROM images").fetchone()
+        self.assertEqual(tuple(row), ("act", "act", 0))
+
     def test_characteristics_persist_and_active_rules_resolve(self):
         saved = engine.save_project(
             "act", ["act chat"], characteristics="주황색 대화방 형태"

@@ -89,7 +89,10 @@ class SimilarityCommandTests(unittest.TestCase):
         args = self.args("--delete", "1:2", "-y")
         with patch.object(engine, "find_images", return_value=[self.keeper_path, self.other_path]), patch.object(
             engine, "find_duplicate_groups", return_value=engine.DuplicateDetectionResult([self.group])
-        ), patch.object(engine, "trash", return_value=1) as trash:
+        ), patch.object(
+            engine, "trash",
+            return_value=engine.TrashResult(trashed=(str(self.other_path),)),
+        ) as trash:
             cli.cmd_similarity(args)
 
         trash.assert_called_once_with([str(self.other_path)])
