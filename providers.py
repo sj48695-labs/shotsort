@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
-PROVIDERS = ("local", "anthropic", "openai", "xai")
+PROVIDERS = ("local", "claude_cli", "codex_cli", "anthropic", "openai", "xai")
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,8 @@ def resolve_config(
     provider: str | None = None,
     model: str | None = None,
     env: Mapping[str, str] | None = None,
+    *,
+    api_key: str | None = None,
 ) -> ProviderConfig:
     """Resolve provider credentials without silently selecting a remote service.
 
@@ -48,6 +50,8 @@ def resolve_config(
         name = "openai"
     if name not in PROVIDERS:
         raise ValueError(f"지원하지 않는 AI 공급자입니다: {name}")
+    if name in {"claude_cli", "codex_cli"}:
+        return ProviderConfig(name, model)
 
     model_vars = {
         "anthropic": "ANTHROPIC_MODEL",
@@ -62,7 +66,7 @@ def resolve_config(
     selected_model = model or values.get("SHOTSORT_AI_MODEL")
     if not selected_model and name != "local":
         selected_model = values.get(model_vars[name])
-    api_key = next((values.get(k) for k in key_vars.get(name, ()) if values.get(k)), None)
+    api_key = api_key or next((values.get(k) for k in key_vars.get(name, ()) if values.get(k)), None)
     base_url = values.get("SHOTSORT_AI_BASE_URL")
     if name == "xai" and not base_url:
         base_url = "https://api.x.ai/v1"
@@ -70,7 +74,7 @@ def resolve_config(
 
 
 def validate_config(config: ProviderConfig) -> None:
-    if not config.is_remote:
+    if not config.is_remote or config.provider in {"claude_cli", "codex_cli"}:
         return
     if not config.model:
         raise ValueError(
@@ -182,6 +186,9 @@ def create_provider(config: ProviderConfig, client: Any = None) -> StructuredPro
     """Create a provider adapter. ``None`` means the offline local classifier."""
     if config.provider == "local":
         return None
+    if config.provider in {"claude_cli", "codex_cli"}:
+        from cli_provider import CLIProvider
+        return CLIProvider(config)
     if config.provider == "anthropic":
         return AnthropicProvider(config, client)
     if config.provider == "xai":

@@ -20,6 +20,7 @@ from nicegui import run, ui
 import engine
 from group_select import apply_select, range_paths, selected_bytes, selected_in_group
 from lazy_groups import GroupPage
+from model_settings import model_settings_controls
 from preview_layout import (
     PREVIEW_CARD_CLASSES,
     PREVIEW_HEADER_CLASSES,
@@ -74,23 +75,9 @@ def index():
     # ── 스캔 컨트롤 ──────────────────────────────────────────────────────────
     with ui.card().classes("w-full"):
         with ui.row().classes("items-center gap-3 w-full"):
-            path_in = ui.input("스캔 경로", value=str(engine.DEFAULT_SCAN_DIR)).classes("grow")
+            path_in = ui.input("스캔 경로", value=str(engine.DEFAULT_SCAN_DIR)).classes("grow min-w-0").style("min-width:180px")
             scan_btn = ui.button("스캔", icon="search")
-        with ui.row().classes("items-start gap-3 w-full"):
-            provider_in = ui.select(
-                {
-                    "local": "내 Mac에서만 분석",
-                    "anthropic": "Claude API",
-                    "openai": "OpenAI API (Codex 계열 포함)",
-                    "xai": "xAI Grok API",
-                },
-                value="local",
-                label="분류 방식",
-            ).classes("w-64")
-            model_in = ui.input(
-                "모델명", placeholder="API에서 사용할 모델명을 입력"
-            ).classes("grow")
-            img_sw = ui.switch("이미지 내용도 AI로 분석", value=False)
+        model_settings = model_settings_controls(engine.DEFAULT_MODEL)
         ui.separator()
         with ui.row().classes("items-center gap-3 w-full"):
             with ui.column().classes("gap-0 grow"):
@@ -100,30 +87,6 @@ def index():
                 )
             projects_btn = ui.button("프로젝트 관리", icon="bookmark").props("outline")
         projects_box = ui.row().classes("items-center gap-2 w-full")
-        mode_lbl = ui.label().classes("text-xs text-gray-500")
-
-        def refresh_mode():
-            provider = provider_in.value
-            if provider != "local":
-                names = {"anthropic": "Claude", "openai": "OpenAI", "xai": "Grok"}
-                key_names = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY",
-                             "xai": "XAI_API_KEY"}
-                mode_lbl.text = (
-                    f"{names[provider]} API 사용 · OCR 텍스트가 전송됩니다. 이미지 분석을 켜면 "
-                    f"축소 이미지도 전송됩니다. 환경변수: {key_names[provider]}"
-                )
-                model_in.enable()
-                img_sw.enable()
-            else:
-                mode_lbl.text = (
-                    "외부 전송 없음 · OCR, 프로젝트 규칙, 색상과 화면 배치를 함께 비교합니다. "
-                    "API 없이도 동작합니다."
-                )
-                model_in.disable()
-                img_sw.disable()
-
-        provider_in.on_value_change(lambda _: refresh_mode())
-        refresh_mode()
         prog_lbl = ui.label().classes("text-xs text-primary")
 
     # ── 통계 + 일괄 액션 ─────────────────────────────────────────────────────
@@ -368,11 +331,7 @@ def index():
         if not root.exists():
             ui.notify(f"경로 없음: {root}", type="negative")
             return
-        provider = provider_in.value
-        model = (model_in.value or "").strip() or None
-        if provider != "local" and not model and provider != "anthropic":
-            ui.notify("선택한 API의 모델명을 입력하세요.", type="warning")
-            return
+        config = model_settings.config
         scan_btn.props("loading")
         scan_btn.disable()
         progress.update(i=0, total=0, running=True)
@@ -381,9 +340,10 @@ def index():
             res = await run.io_bound(
                 engine.scan_images,
                 root,
-                provider=provider,
-                model=model,
-                with_image=img_sw.value,
+                provider=config.provider,
+                model=config.model,
+                api_key=config.api_key,
+                with_image=model_settings.with_image,
                 on_item=on_scan_item,
             )
         except Exception as e:
@@ -394,9 +354,11 @@ def index():
             scan_btn.props(remove="loading")
             scan_btn.enable()
         msg = f"완료: 신규 {res.new}개, 스킵 {res.skipped}개"
+        if res.errors:
+            msg += f" · 분석 실패 {len(res.errors)}개: {res.errors[0][1]}"
         if res.consolidate_error:
             msg += f" (그룹 정규화 실패: {res.consolidate_error})"
-        ui.notify(msg, type="positive")
+        ui.notify(msg, type="warning" if res.errors else "positive")
         update_stats()
         render_groups()
 
@@ -917,6 +879,7 @@ def main():
         title="shotsort",
         window_size=(1100, 800) if native else None,
         port=port,
+        host="127.0.0.1",
     )
 
 

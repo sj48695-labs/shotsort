@@ -56,7 +56,8 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 - **자주 쓰는 프로젝트**: 프로젝트명과 별칭을 한 번 저장하면 이후 스캔에 자동 적용
 - **그룹**: 기본 접힘(삭제후보·큰 그룹만 펼침), 크기순 정렬. 헤더의 `이 그룹 휴지통으로` 로 그룹 통째 정리. `선택 삭제`는 그 그룹에서 고른 항목만 휴지통으로
 - **선택 삭제**: 카드 체크 → 상단 `선택 항목 휴지통으로` 또는 그룹의 `선택 삭제` (확인 후 복구 가능한 휴지통으로). 아직 펼치지 않은 카드도 전체선택에 포함
-- **분류 방식**: 로컬(외부 전송 없음) 또는 Claude·OpenAI·Grok API 선택
+- **모델 설정**: PC에 로그인된 **Claude·Codex CLI 계정**을 먼저 연결할 수 있습니다. `PC 연결 확인` → `이 방식으로 사용` → 전송 범위 확인 → `승인하고 사용` 순서로 다음 스캔에 적용됩니다. 취소하면 기존 설정을 유지합니다. 모델명을 비워두면 CLI 기본 모델을 사용합니다. CLI 연결은 OCR 텍스트만 공급자 서버에 전송하며, CLI 계정의 요금·사용 한도가 적용됩니다. 오프라인 추론이 아닙니다.
+- **다른 연결 방식**: 무료 로컬 모드(외부 전송 없음)나 Claude·OpenAI·Grok API 키 연결도 선택할 수 있습니다. API 키는 파일에 저장하지 않으며 화면을 새로 열면 다시 입력해야 합니다. 환경변수로 설정한 API 키도 사용할 수 있습니다.
 - **이미지 내용도 AI로 분석**: 끄면 OCR 텍스트만, 켜면 축소 이미지도 선택한 API로 전송
 
 ### CLI
@@ -64,6 +65,8 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 ```bash
 ./run.sh cli scan                      # ~/Desktop 분석 (캐시된 건 스킵)
 ./run.sh cli scan ~/Pictures --with-image
+./run.sh cli scan --provider claude_cli # PC의 Claude 로그인 사용 (OCR 텍스트 전송)
+./run.sh cli scan --provider codex_cli  # PC의 Codex 로그인 사용 (OCR 텍스트 전송)
 ./run.sh cli scan --provider openai --model <모델명> --with-image
 ./run.sh cli scan --provider xai --model <모델명> --with-image
 ./run.sh cli groups                    # 프로젝트별 그룹
