@@ -34,7 +34,8 @@ def cmd_scan(args):
         provider = "anthropic" if engine.has_api_key() else "local"
     if provider == "local":
         print("로컬 분석: 외부 전송 없이 OCR + 프로젝트 규칙 + 화면 특징을 사용합니다.\n")
-    mode = f"{provider} API · 모델: {args.model or '(환경변수)'}" if provider != "local" else "로컬 분석"
+    mode = (f"{provider} · 모델: {args.model or '(CLI 기본 모델)'}" if provider.endswith("_cli") else
+            f"{provider} API · 모델: {args.model or '(환경변수)'}" if provider != "local" else "로컬 분석")
 
     printed = False
 
@@ -289,9 +290,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("scan", help="이미지 분석(캐시되지 않은 것만)")
     sp.add_argument("path", nargs="?", default=str(DEFAULT_SCAN_DIR), help=f"스캔 경로 (기본 {DEFAULT_SCAN_DIR})")
-    sp.add_argument("--provider", choices=["local", "anthropic", "openai", "xai"],
+    sp.add_argument("--provider", choices=["local", "claude_cli", "codex_cli", "anthropic", "openai", "xai"],
                     help="분류 방식 (기본: API 키가 있으면 anthropic, 아니면 local)")
-    sp.add_argument("--model", help=f"API 모델명 (Anthropic 기본 {DEFAULT_MODEL}; 다른 공급자는 필수)")
+    sp.add_argument("--model", help=f"모델명 (CLI는 생략 가능, Anthropic 기본 {DEFAULT_MODEL}; 다른 API는 필수)")
     sp.add_argument("--with-image", action="store_true", help="OCR 텍스트와 함께 축소 이미지를 선택한 API에 전송")
     sp.add_argument("--local", action="store_true", help="API 키가 있어도 로컬 휴리스틱 모드 강제(무료/오프라인)")
     sp.add_argument("--force", action="store_true", help="캐시 무시하고 전부 재분석")

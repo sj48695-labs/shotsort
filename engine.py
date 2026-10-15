@@ -1137,6 +1137,7 @@ def scan_images(
     use_llm: bool | None = None,
     provider: str | None = None,
     model: str | None = None,
+    api_key: str | None = None,
     with_image: bool = False,
     force: bool = False,
     consolidate: bool = True,
@@ -1148,7 +1149,9 @@ def scan_images(
         provider = "anthropic" if use_llm else "local"
     # 기존 Claude 호출은 모델 기본값을 유지하고, 다른 공급자는 명시 선택을 요구한다.
     selected_model = model or (DEFAULT_MODEL if provider in {"anthropic", "claude"} else None)
-    config = providers.resolve_config(provider, selected_model)
+    config = providers.resolve_config(provider, selected_model, api_key=api_key)
+    if with_image and config.provider in {"claude_cli", "codex_cli"}:
+        raise ValueError("PC 계정 연결은 OCR 텍스트만 분석합니다. 이미지 분석은 API 연결을 사용하세요.")
     adapter = providers.create_provider(config)
     remote = adapter is not None
     res = ScanResult(used_llm=remote)

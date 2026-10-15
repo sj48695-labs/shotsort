@@ -25,6 +25,15 @@ class ProviderConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "OPENAI_API_KEY"):
             providers.validate_config(providers.ProviderConfig("openai", model="m"))
 
+    def test_screen_key_overrides_environment_without_changing_it(self):
+        env = {"OPENAI_API_KEY": "environment-key"}
+        cfg = providers.resolve_config("openai", "chosen-model", env, api_key="screen-key")
+        providers.validate_config(cfg)
+        self.assertEqual(cfg.api_key, "screen-key")
+        self.assertEqual(env, {"OPENAI_API_KEY": "environment-key"})
+        self.assertEqual(providers.resolve_config("openai", "m", env).api_key,
+                         "environment-key")
+
 
 class ProviderCallTest(unittest.TestCase):
     def test_anthropic_structured_call_with_image(self):
