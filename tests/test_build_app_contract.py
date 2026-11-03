@@ -25,10 +25,11 @@ class BuildAppContractTests(unittest.TestCase):
         commands = (
             "codesign --force --deep --options runtime --timestamp",
             "hdiutil create",
+            'codesign --force --timestamp --sign "$SIGN_IDENTITY" dist/shotsort.dmg',
             "xcrun notarytool submit",
             "xcrun stapler staple",
             "xcrun stapler validate",
-            "spctl -a -vvv -t install",
+            "spctl -a -vvv -t open --context context:primary-signature",
         )
         positions = [self.script.index(command) for command in commands]
         self.assertEqual(positions, sorted(positions))
@@ -62,13 +63,22 @@ class BuildAppContractTests(unittest.TestCase):
         workflow = RELEASE_WORKFLOW.read_text()
         self.assertIn('store-credentials "$NOTARY_PROFILE"', workflow)
         self.assertIn('--keychain "$RELEASE_KEYCHAIN"', workflow)
-        self.assertIn('NOTARY_KEYCHAIN: ${{ runner.temp }}/shotsort-signing.keychain-db', workflow)
+        job_environment = workflow.split('    env:\n', 1)[1].split('    steps:', 1)[0]
+        self.assertNotIn('runner.temp', job_environment)
+        build_step = workflow.split('      - name: Build signed and notarized DMG', 1)[1].split('      - name:', 1)[0]
+        self.assertIn('          NOTARY_KEYCHAIN: ${{ runner.temp }}/shotsort-signing.keychain-db', build_step)
         self.assertIn('security delete-keychain "$RUNNER_TEMP/shotsort-signing.keychain-db"', workflow)
 
     def test_smoke_validates_the_stapled_dmg_before_copying_the_app(self):
         smoke = SMOKE_SCRIPT.read_text()
         self.assertIn('xcrun stapler validate "$DMG_PATH"', smoke)
         self.assertNotIn('xcrun stapler validate "$INSTALLED_APP"', smoke)
+
+    def test_gatekeeper_assesses_the_installed_app_as_executable_code(self):
+        smoke = SMOKE_SCRIPT.read_text()
+        self.assertIn('spctl -a -vvv -t execute "$INSTALLED_APP"', smoke)
+        self.assertNotIn('-t install', smoke)
+        self.assertNotIn('-t install', self.script)
 
 
 if __name__ == "__main__":

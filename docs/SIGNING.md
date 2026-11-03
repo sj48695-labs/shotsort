@@ -16,7 +16,7 @@
 
 검증을 마친 커밋에 `v*` 태그를 push하면 `Notarized DMG release` workflow가 실행된다. secret이 하나라도 없으면 asset을 만들기 전에 실패하며, 무서명 DMG를 릴리스하지 않는다.
 
-workflow 순서는 `.app` 빌드 → hardened runtime 서명 → DMG 생성 → notarization → staple → checksum → clean-install smoke → GitHub Release 업로드다. `build_app.sh`를 로컬에서 서명하려면 `SIGN_IDENTITY`와 `NOTARY_PROFILE`을 반드시 함께 설정한다. 둘 다 생략한 로컬 빌드는 개발 확인 전용이며 배포할 수 없다.
+workflow 순서는 `.app` 빌드 → hardened runtime 서명 → DMG 생성·Developer ID 서명 → notarization → staple → checksum → clean-install smoke → GitHub Release 업로드다. DMG는 `spctl -t open --context context:primary-signature`, 복사한 앱은 `spctl -t execute`로 검사한다. `build_app.sh`를 로컬에서 서명하려면 `SIGN_IDENTITY`와 `NOTARY_PROFILE`을 반드시 함께 설정한다. 둘 다 생략한 로컬 빌드는 개발 확인 전용이며 배포할 수 없다.
 
 ## 다운로드 검증
 

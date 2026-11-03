@@ -49,6 +49,7 @@ rm -rf dist/dmg
 
 if [ -n "$SIGN_IDENTITY" ]; then
   echo "▶ DMG 공증 및 Gatekeeper 검증"
+  codesign --force --timestamp --sign "$SIGN_IDENTITY" dist/shotsort.dmg
   NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
   if [ -n "${NOTARY_KEYCHAIN:-}" ]; then
     NOTARY_ARGS+=(--keychain "$NOTARY_KEYCHAIN")
@@ -56,7 +57,7 @@ if [ -n "$SIGN_IDENTITY" ]; then
   xcrun notarytool submit dist/shotsort.dmg "${NOTARY_ARGS[@]}" --wait
   xcrun stapler staple dist/shotsort.dmg
   xcrun stapler validate dist/shotsort.dmg
-  spctl -a -vvv -t install dist/shotsort.dmg
+  spctl -a -vvv -t open --context context:primary-signature dist/shotsort.dmg
 fi
 
 echo "✅ 완료: dist/shotsort.app, dist/shotsort.dmg"
