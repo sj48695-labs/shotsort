@@ -1,0 +1,294 @@
+import json
+import subprocess
+from types import SimpleNamespace
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import engine
+import providers
+
+
+class FakeAdapter(providers.StructuredProvider):
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = 0
+
+    def generate_json(self, **kwargs):
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return {"project": "demo", "kind": "ui", "summary": "ok",
+                "deletable": False, "confidence": .9}
+
+
+class AIRuntimeTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        (self.root / "screen.png").write_bytes(b"not-an-image")
+        self.conn = engine.db(sqlite3.connect(":memory:"))
+        self.real_db = engine.db
+        self.db = patch.object(engine, "db", return_value=self.conn)
+        self.db.start()
+
+    def tearDown(self):
+        self.db.stop()
+        self.conn.close()
+        self.temp.cleanup()
+
+    def plan(self, method, provider="local", reason=None):
+        config = providers.ProviderConfig(provider, "model", "key")
+        status = providers.ExecutionStatus(provider, method, "model",
+                                           method != providers.ExecutionMethod.LOCAL, reason)
+        return providers.ExecutionPlan(method, config, status)
+
+    def scan_with(self, plan, adapter):
+        with patch.object(engine.providers, "resolve_execution", return_value=plan), \
+             patch.object(engine.providers, "create_provider", return_value=adapter), \
+             patch.object(engine, "ocr", return_value="text"):
+            return engine.scan_images(self.root, provider="openai", model="model",
+                                      api_consent=True)
+
+    def test_schema_settings_consent_and_catalog_cache_round_trip(self):
+        engine.save_ai_settings({"mode": "auto", "model": "gpt"}, conn=self.conn)
+        engine.set_api_consent("openai", with_image=True, allowed=True, conn=self.conn)
+        engine.save_model_catalog("openai", "api", ["gpt", "mini"], conn=self.conn)
+        self.assertEqual(engine.load_ai_settings(conn=self.conn)["model"], "gpt")
+        self.assertTrue(engine.has_api_consent("openai", with_image=True, conn=self.conn))
+        catalog = engine.load_model_catalog("openai", "api", conn=self.conn)
+        self.assertEqual(catalog["models"], ["gpt", "mini"])
+        self.assertFalse(catalog["stale"])
+
+    def test_stale_catalog_is_refreshed_and_failure_keeps_cached_models(self):
+        engine.save_model_catalog("openai", "api", ["old"], conn=self.conn)
+        self.conn.execute("UPDATE model_catalog_cache SET fetched_at=0")
+        self.conn.commit()
+        with patch.object(engine.providers, "list_api_models", return_value=["new"]):
+            catalog = engine.refresh_model_catalog("openai", "api", conn=self.conn)
+        self.assertEqual(catalog["models"], ["new"])
+
+        self.conn.execute("UPDATE model_catalog_cache SET fetched_at=0")
+        self.conn.commit()
+        with patch.object(engine.providers, "list_api_models", side_effect=RuntimeError("offline")):
+            catalog = engine.refresh_model_catalog("openai", "api", conn=self.conn)
+        self.assertEqual(catalog["models"], ["new"])
+        self.assertTrue(catalog["stale"])
+
+    def test_cli_failure_retries_local_and_reports_actual_execution(self):
+        result = self.scan_with(self.plan(providers.ExecutionMethod.CODEX_CLI, "codex"),
+                                FakeAdapter(providers.ExecutionTimeout("late")))
+        self.assertEqual(result.actual_provider, "local")
+        self.assertEqual(result.actual_method, providers.ExecutionMethod.LOCAL)
+        self.assertTrue(result.fallback_reason)
+        self.assertTrue(result.external_transfer)
+        self.assertEqual(result.new, 1)
+
+    def test_auto_uses_codex_default_instead_of_anthropic_default(self):
+        capability = providers.ProviderCapability.codex_cli(available=True, logged_in=True)
+        with patch.object(engine.providers, "probe_codex_cli", return_value=capability), \
+             patch.object(engine.providers, "create_provider", return_value=FakeAdapter()) as create, \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(
+                self.root, provider="anthropic", analysis_mode="auto", consolidate=False,
+            )
+        self.assertEqual(result.actual_method, providers.ExecutionMethod.CODEX_CLI)
+        self.assertIsNone(create.call_args.args[0].model)
+
+    def test_auto_uses_claude_after_unavailable_codex_for_text_only_analysis(self):
+        capabilities = {
+            "codex": providers.ProviderCapability.codex_cli(available=False),
+            "claude": providers.ProviderCapability.claude_cli(available=True, logged_in=True),
+        }
+        with patch.object(engine.providers, "probe_cli_capabilities", return_value=capabilities), \
+             patch.object(engine.providers, "probe_codex_cli", return_value=capabilities["codex"]), \
+             patch.object(engine.providers, "probe_claude_cli", return_value=capabilities["claude"]), \
+             patch.object(engine.providers, "create_provider", return_value=FakeAdapter()) as create, \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(self.root, provider="anthropic", analysis_mode="auto", consolidate=False)
+        self.assertEqual(result.actual_method, providers.ExecutionMethod.CLAUDE_CLI)
+        self.assertEqual(create.call_args.args[0].provider, "claude")
+
+    def test_consented_api_failure_only_retries_local(self):
+        adapter = FakeAdapter(RuntimeError("rate limit"))
+        result = self.scan_with(self.plan(providers.ExecutionMethod.API, "openai"), adapter)
+        self.assertEqual(adapter.calls, 1)
+        self.assertEqual(result.actual_provider, "local")
+        self.assertIn("rate", result.fallback_reason.lower())
+
+    def test_unconsented_api_plan_is_local_and_never_creates_adapter(self):
+        result = self.scan_with(self.plan(providers.ExecutionMethod.LOCAL, reason="no consent"), None)
+        self.assertEqual(result.actual_provider, "local")
+        self.assertFalse(result.external_transfer)
+        self.assertEqual(result.new, 1)
+
+    def test_adapter_initialization_failure_falls_back_to_local_before_transfer(self):
+        plan = self.plan(providers.ExecutionMethod.API, "openai")
+        with patch.object(engine.providers, "resolve_execution", return_value=plan), \
+             patch.object(engine.providers, "create_provider", side_effect=RuntimeError("SDK missing")), \
+             patch.object(engine, "ocr", return_value="text"):
+            result = engine.scan_images(self.root, provider="openai", model="model", api_consent=True)
+        self.assertEqual(result.actual_provider, "local")
+        self.assertFalse(result.external_transfer)
+        self.assertIn("provider_error", result.fallback_reason)
+        self.assertEqual(result.new, 1)
+
+    def test_error_classes_are_safe_and_distinct(self):
+        self.assertEqual(engine.classify_provider_error(providers.ExecutionTimeout("x")), "timeout")
+        self.assertEqual(engine.classify_provider_error(providers.AuthenticationError("x")), "authentication")
+        self.assertEqual(engine.classify_provider_error(RuntimeError("401 Unauthorized")), "authentication")
+        self.assertEqual(engine.classify_provider_error(RuntimeError("network unreachable")), "network")
+        self.assertEqual(engine.classify_provider_error(RuntimeError("rate limit")), "rate_limit")
+
+    def test_cached_images_skip_but_consolidation_preserves_execution_state(self):
+        path = self.root / "screen.png"
+        sha = engine.file_sha(path)
+        self.conn.execute("INSERT INTO images(path, sha) VALUES(?, ?)", (str(path), sha))
+        self.conn.commit()
+        result = self.scan_with(self.plan(providers.ExecutionMethod.LOCAL), None)
+        self.assertEqual(result.skipped, 1)
+        self.assertEqual(result.actual_provider, "local")
+        self.assertIsNone(result.consolidate_error)
+
+    def test_cli_process_contract_through_real_resolver_and_database(self):
+        for vendor, image, timeout in (("codex", True, False), ("claude", False, False),
+                                       ("codex", False, True), ("claude", False, True)):
+            with self.subTest(vendor=vendor, timeout=timeout):
+                self.conn.execute("DELETE FROM images")
+                self.conn.commit()
+                capabilities = {"codex": providers.ProviderCapability.codex_cli(
+                    available=vendor == "codex", logged_in=True),
+                    "claude": providers.ProviderCapability.claude_cli(available=True, logged_in=True)}
+                calls = []
+                def runner(command, **kwargs):
+                    calls.append(command)
+                    if timeout:
+                        raise subprocess.TimeoutExpired(command, 1, stderr="Bearer secret")
+                    tag = FakeAdapter().generate_json()
+                    if vendor == "codex":
+                        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps(tag))
+                        output = "progress"
+                    else:
+                        output = json.dumps({"structured_output": tag})
+                    return SimpleNamespace(returncode=0, stdout=output, stderr="")
+                adapter_type = providers.CodexCliProvider if vendor == "codex" else providers.ClaudeCliProvider
+                def create(config):
+                    self.assertEqual(config.provider, vendor)
+                    return adapter_type(config, runner=runner)
+                with patch.object(providers, "probe_codex_cli", return_value=capabilities["codex"]), \
+                     patch.object(providers, "probe_claude_cli", return_value=capabilities["claude"]), \
+                     patch.object(providers, "create_provider", side_effect=create) as factory, \
+                     patch.object(engine, "_downscaled_b64", return_value=("aGVsbG8=", "image/jpeg")), \
+                     patch.object(engine, "ocr", return_value="text"):
+                    result = engine.scan_images(self.root, provider="openai", model="api-model",
+                        analysis_mode="auto", with_image=image, consolidate=False)
+                self.assertEqual(factory.call_count, 1)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(result.new, 1)
+                self.assertEqual(result.actual_provider, "local" if timeout else vendor)
+                self.assertIsNone(result.actual_model)
+                self.assertTrue(result.external_transfer)
+                self.assertNotIn("secret", result.fallback_reason or "")
+                row = self.conn.execute("SELECT project FROM images").fetchone()
+                if not timeout:
+                    self.assertEqual(row["project"], "demo")
+
+    def test_api_requires_exact_scope_or_explicit_consent_with_real_resolver(self):
+        engine.set_api_consent("openai", with_image=False, allowed=True, conn=self.conn)
+        for provider, image, consent, mode, allowed in (
+            ("openai", False, None, "api", True),
+            ("openai", False, False, "api", False),
+            ("openai", True, None, "api", False),
+            ("xai", False, None, "direct", False),
+            ("anthropic", False, None, None, False),
+            ("openai", True, True, "api", True),
+        ):
+            with self.subTest(provider=provider, image=image, consent=consent):
+                self.conn.execute("DELETE FROM images")
+                adapter = FakeAdapter()
+                with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test", "XAI_API_KEY": "sk-test",
+                                               "ANTHROPIC_API_KEY": "sk-test"}), \
+                     patch.object(providers, "create_provider", side_effect=lambda c: adapter if c.is_remote else None) as create, \
+                     patch.object(engine, "ocr", return_value="text"):
+                    result = engine.scan_images(self.root, provider=provider, model="m",
+                        with_image=image, api_consent=consent, analysis_mode=mode, consolidate=False)
+                self.assertEqual(adapter.calls, int(allowed))
+                self.assertEqual(result.external_transfer, allowed)
+                self.assertEqual(create.call_args.args[0].provider, provider if allowed else "local")
+                self.assertEqual(result.new, 1)
+
+    def test_api_failures_and_group_failure_never_try_another_provider(self):
+        for failure in (RuntimeError("401 Bearer secret"), RuntimeError("429 sk-test-key"),
+                        RuntimeError("network unreachable"), TimeoutError("timed out"), "group"):
+            with self.subTest(failure=failure):
+                self.conn.execute("DELETE FROM images")
+                adapter = FakeAdapter(None if failure == "group" else failure)
+                if failure == "group":
+                    original = adapter.generate_json
+                    def generate(**kwargs):
+                        if adapter.calls:
+                            adapter.calls += 1
+                            raise RuntimeError("network Bearer secret")
+                        return original(**kwargs)
+                    adapter.generate_json = generate
+                with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}), \
+                     patch.object(providers, "create_provider", return_value=adapter) as create, \
+                     patch.object(engine, "ocr", return_value="text"):
+                    result = engine.scan_images(self.root, provider="openai", model="m",
+                        analysis_mode="api", api_consent=True, with_image=True)
+                create.assert_called_once()
+                self.assertEqual(result.actual_provider, "local")
+                self.assertTrue(result.external_transfer)
+                self.assertEqual(result.new, 1)
+                self.assertNotIn("secret", result.fallback_reason)
+                self.assertNotIn("sk-test-key", result.fallback_reason)
+                if isinstance(failure, TimeoutError):
+                    self.assertIn("timeout", result.fallback_reason)
+
+    def test_file_database_reopen_preserves_settings_scopes_and_catalog(self):
+        original_db = self.real_db
+        path = self.root / "state.db"
+        conn = original_db(sqlite3.connect(path))
+        settings = {"analysis_mode": "direct", "analysis_provider": "openai",
+                    "analysis_model": "saved", "analysis_with_image": True,
+                    "direct_provider": "openai", "direct_model": "approved", "direct_with_image": True}
+        engine.save_ai_settings(settings, conn)
+        engine.set_api_consent("openai", with_image=True, allowed=True, conn=conn)
+        engine.save_model_catalog("openai", "api", ["saved"], source="api", conn=conn)
+        engine.save_model_catalog("openai", "cli", ["cli-only"], conn=conn)
+        engine.save_model_catalog("xai", "api", ["xai-only"], conn=conn)
+        before = engine.load_model_catalog("openai", "api", conn=conn)
+        conn.close()
+        conn = original_db(sqlite3.connect(path))
+        try:
+            restored = engine.load_ai_settings(conn)
+            for name, value in settings.items():
+                self.assertEqual(restored[name], value)
+            self.assertTrue(engine.has_api_consent("openai", with_image=True, conn=conn))
+            self.assertFalse(engine.has_api_consent("openai", with_image=False, conn=conn))
+            self.assertFalse(engine.has_api_consent("xai", with_image=True, conn=conn))
+            with patch.object(providers, "list_api_models") as fetch:
+                self.assertEqual(engine.refresh_model_catalog("openai", "api", conn=conn), before)
+                fetch.assert_not_called()
+            self.assertEqual(engine.load_model_catalog("openai", "cli", conn=conn)["models"], ["cli-only"])
+            self.assertEqual(engine.load_model_catalog("xai", "api", conn=conn)["models"], ["xai-only"])
+            conn.execute("UPDATE model_catalog_cache SET fetched_at=0 WHERE provider='openai' AND execution_mode='api'")
+            conn.commit()
+        finally:
+            conn.close()
+        conn = original_db(sqlite3.connect(path))
+        try:
+            with patch.object(providers, "list_api_models", side_effect=RuntimeError("offline")) as fetch:
+                cached = engine.refresh_model_catalog("openai", "api", conn=conn)
+                fetch.assert_called_once()
+            self.assertEqual(cached["models"], ["saved"])
+            self.assertEqual(cached["fetched_at"], 0)
+            self.assertEqual(cached["source"], "api")
+            self.assertTrue(cached["stale"])
+            with self.assertRaises(ValueError):
+                engine.save_ai_settings({"api_key": "secret"}, conn)
+            self.assertNotIn("secret", str(engine.load_ai_settings(conn)))
+        finally:
+            conn.close()

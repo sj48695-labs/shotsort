@@ -35,7 +35,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 ./run.sh cli groups
 ```
 
-> 💡 `export ANTHROPIC_API_KEY=sk-...` 후 실행하면 Claude가 더 정확히 묶어줍니다.
+> 💡 API를 쓰려면 해당 공급자의 환경변수(예: `ANTHROPIC_API_KEY`)를 운영체제 환경에 설정한 뒤 앱에서 전송 범위를 확인하고 동의합니다. 키 값은 문서·화면·SQLite에 표시하거나 저장하지 않습니다.
 > 소스(git) 설치는 git 기반 자동 업데이트도 동작합니다.
 
 ### 처음 사용
@@ -56,19 +56,23 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 - **자주 쓰는 프로젝트**: 프로젝트명과 별칭을 한 번 저장하면 이후 스캔에 자동 적용
 - **그룹**: 기본 접힘(삭제후보·큰 그룹만 펼침), 크기순 정렬. 헤더의 `이 그룹 휴지통으로` 로 그룹 통째 정리. `선택 삭제`는 그 그룹에서 고른 항목만 휴지통으로
 - **선택 삭제**: 카드 체크 → 상단 `선택 항목 휴지통으로` 또는 그룹의 `선택 삭제` (확인 후 복구 가능한 휴지통으로). 아직 펼치지 않은 카드도 전체선택에 포함
-- **모델 설정**: PC에 로그인된 **Claude·Codex CLI 계정**을 먼저 연결할 수 있습니다. `PC 연결 확인` → `이 방식으로 사용` → 전송 범위 확인 → `승인하고 사용` 순서로 다음 스캔에 적용됩니다. 취소하면 기존 설정을 유지합니다. 모델명을 비워두면 CLI 기본 모델을 사용합니다. CLI 연결은 OCR 텍스트만 공급자 서버에 전송하며, CLI 계정의 요금·사용 한도가 적용됩니다. 오프라인 추론이 아닙니다.
-- **다른 연결 방식**: 무료 로컬 모드(외부 전송 없음)나 Claude·OpenAI·Grok API 키 연결도 선택할 수 있습니다. API 키는 파일에 저장하지 않으며 화면을 새로 열면 다시 입력해야 합니다. 환경변수로 설정한 API 키도 사용할 수 있습니다.
-- **이미지 내용도 AI로 분석**: 끄면 OCR 텍스트만, 켜면 축소 이미지도 선택한 API로 전송
+- **직접 설정의 모델 설정**: PC에 로그인된 **Claude·Codex CLI 계정**을 먼저 연결할 수 있습니다. `PC 연결 확인` → `이 방식으로 사용` → 전송 범위 확인 → `승인하고 사용` 순서로 다음 스캔에 적용됩니다. 취소하면 기존 설정을 유지합니다. 모델명을 비워두면 CLI 기본 모델을 사용합니다. CLI 연결은 OCR 텍스트만 공급자 서버에 전송하며, CLI 계정의 요금·사용 한도가 적용됩니다. 오프라인 추론이 아닙니다.
+- **다른 연결 방식**: 무료 로컬 모드(외부 전송 없음)나 Claude·OpenAI·Grok API 키 연결도 선택할 수 있습니다. 직접 설정에서 입력한 API 키는 파일에 저장하지 않으며 화면을 새로 열면 다시 입력해야 합니다. 환경변수로 설정한 API 키도 사용할 수 있습니다.
+- **분석 방식**: `자동`은 검증된 Codex CLI → Claude CLI(텍스트만) → 이미 동의한 API → 로컬 순서로 선택합니다. `로컬 분석만`, `설치된 Codex/Claude CLI`, `설치된 API Key`, `직접 설정`도 명시적으로 고를 수 있습니다.
+- **모델**: 기본은 자동 추천입니다. 마지막으로 확인한 모델 목록은 캐시해 보여 주며 목록에 없는 모델은 직접 입력할 수 있습니다. 저장한 모델이 목록에서 사라지면 자동 추천으로 바꾸기 전에 확인합니다.
+- **이미지 내용도 AI로 분석**: 끄면 OCR 텍스트만, 켜면 축소 이미지도 선택한 CLI/API로 전송될 수 있습니다.
 
 ### CLI
 
 ```bash
 ./run.sh cli scan                      # ~/Desktop 분석 (캐시된 건 스킵)
-./run.sh cli scan ~/Pictures --with-image
+./run.sh cli scan ~/Pictures --provider local
+./run.sh cli scan --provider auto       # Codex CLI → Claude CLI(텍스트) → 동의된 API → local
+./run.sh cli scan --provider cli        # 검증된 Codex/Claude CLI, 불가하면 local
+./run.sh cli scan --provider api --direct-provider openai --model <모델명> --allow-api-transfer
+./run.sh cli scan --provider direct --direct-provider xai --model <모델명> --with-image --allow-api-transfer
 ./run.sh cli scan --provider claude_cli # PC의 Claude 로그인 사용 (OCR 텍스트 전송)
 ./run.sh cli scan --provider codex_cli  # PC의 Codex 로그인 사용 (OCR 텍스트 전송)
-./run.sh cli scan --provider openai --model <모델명> --with-image
-./run.sh cli scan --provider xai --model <모델명> --with-image
 ./run.sh cli groups                    # 프로젝트별 그룹
 ./run.sh cli projects add act-server --aliases "act server,github.com/acme/act-server"
 ./run.sh cli projects list             # 저장 프로젝트 확인
@@ -86,6 +90,17 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 
 (`shotsort.py` 는 `cli.py` 의 하위호환 shim 이라 `python shotsort.py scan ...` 도 동일하게 동작합니다.)
 
+`--provider`는 `auto`, `cli`, `api`, `direct`, `local`을 지원합니다. 이전의
+`--provider openai` 같은 공급자명은 `direct`의 호환 단축값입니다. API를 쓰는
+비대화식 실행은 매번 `--allow-api-transfer`가 필요합니다. 이 플래그가 없으면 API
+후보·키가 있어도 호출하지 않고 로컬 분석으로 fallback합니다. 시작과 종료에는 실제
+provider/method/model, 외부 전송 여부, 모델 목록 cache 상태와 fallback 사유만 출력하며,
+키·Bearer 토큰 등 비밀 값은 마스킹합니다.
+
+자동 모드와 `cli` 모드는 설치·로그인·구조화 출력을 확인한 Codex CLI를 먼저 사용하고,
+사용자가 이미지 전송을 켜지 않았을 때만 Claude CLI를 다음 후보로 사용합니다. 현재
+Claude CLI에는 로컬 이미지 첨부 계약이 없으므로 이미지 분석에는 선택되지 않습니다.
+
 `similarity` 출력은 `exact`(완전히 같은 파일) 또는 `유사` 그룹별로 보존 후보, 구성원 번호, 보존 후보 기준 유사도와 파일 크기를 보여줍니다. 검사는 파일을 바꾸지 않습니다. 삭제하려면 반드시 `--delete GROUP:NUMBER`로 **보존 후보가 아닌** 구성원을 지정해야 하며, 지정하지 않은 파일과 보존 후보는 자동 삭제되지 않습니다. 실행 전에는 y/N 확인이 나오고 `-y`로만 생략할 수 있습니다.
 
 ---
@@ -94,7 +109,7 @@ cd shotsort && ./run.sh            # 앱 (최초 1회 의존성 자동 설치)
 
 1. **로컬 OCR** — macOS Vision 으로 이미지에서 텍스트 추출 (무료·오프라인, 한글/영문). 안 되면 tesseract → 그것도 없으면 건너뜀.
 2. **분류** — 추출 텍스트(+선택적 축소 이미지)로 `project / kind / 요약 / 삭제가능` 태그 부여
-   - **AI API**: Claude, OpenAI API, xAI Grok 중 선택. 모델명과 해당 API 키 필요
+   - **AI CLI/API**: 검증된 Codex CLI, OCR 텍스트 전용 Claude CLI 또는 Claude·OpenAI·xAI API 중 선택. API는 모델명과 해당 API 키 필요
    - **로컬 모드**: 규칙 기반 종류 분류 + OCR 토큰 + 색상·밝기·화면 배치 유사도
 3. **그룹 정규화** — 비슷한 것끼리 묶고 그룹명을 정리
 
@@ -154,10 +169,20 @@ OCR 휴리스틱만으로는 1장당 1그룹이 되기 쉬워, 그룹이 폭증�
 
 ## API 비용과 개인정보
 
-로컬 모드는 외부 전송과 API 비용이 없습니다. AI API를 선택하면 기본적으로 OCR
-텍스트가 해당 공급자에 전송되고, **이미지 내용도 AI로 분석**을 켠 경우에만 축소
-이미지가 함께 전송됩니다. 모델별 비용·지원 기능은 각 공급자의 현재 문서를 확인하세요.
-shotsort는 OpenAI·Grok 모델명을 임의로 고정하지 않으며 사용자가 직접 입력합니다.
+로컬 모드는 외부 전송과 API 비용이 없습니다. Codex CLI와 AI API는 모두 외부 서비스로
+OCR 텍스트를 전송할 수 있고, **이미지 내용도 AI로 분석**을 켠 경우에는 축소 이미지도
+전송될 수 있습니다. API는 공급자와 이미지 포함 여부별로 앱에서 명시 동의해야 하며,
+동의하지 않거나 CLI/API가 실패하면 로컬 분석으로 계속합니다. 다른 유료 API로 자동
+전환하지 않습니다.
+
+API 키는 사용자가 설정한 환경변수 또는 직접 설정 화면의 입력에서 읽습니다. 입력한 키는
+현재 화면 메모리에만 유지하며, 재실행 후에는 다시 입력해야 합니다. SQLite 설정·모델 목록
+캐시·알림에는 키 값을 저장하거나 표시하지 않습니다. Keychain 연동은 구현되어 있지 않으며,
+화면에는 환경변수 키의 **사용 가능 상태만** 보입니다. 승인된 모델과 이미지 선택은 복원하지만
+API 전송 동의는 공급자와 이미지 범위가 일치할 때만 사용합니다. 모델 목록 캐시는 마지막 정상 목록과
+갱신 시각을 보존하고 24시간 뒤 새로 확인합니다. 조회할 수 없는 경우에도 캐시 또는 자동
+추천과 직접 입력으로 계속 사용할 수 있습니다. 모델별 비용·지원 기능은 각 공급자의 현재
+문서를 확인하세요.
 
 설치 전 데이터 처리 경계와 다운로드 checksum은 [공개 설치 랜딩](https://sj48695-labs.github.io/shotsort/)에 정리되어 있습니다. 설치 경험이나 문제는 [GitHub feedback issue](https://github.com/sj48695-labs/shotsort/issues/new)로 알려 주세요. 별도 분석 쿠키나 SDK는 사용하지 않습니다.
 

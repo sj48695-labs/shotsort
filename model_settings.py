@@ -1,4 +1,4 @@
-"""앱 화면에서만 유지하는 분류 모델 설정. API 키는 디스크에 저장하지 않는다."""
+"""승인된 모델 선택을 복원한다. API 키는 디스크에 저장하지 않는다."""
 from dataclasses import dataclass, field
 
 from nicegui import run, ui
@@ -17,9 +17,20 @@ class ModelSettings:
     config: ProviderConfig = field(default_factory=ProviderConfig)
     with_image: bool = False
 
+    @classmethod
+    def from_saved(cls, saved):
+        provider = saved.get("direct_provider", "local")
+        config = resolve_config(provider, saved.get("direct_model") or None)
+        return cls(config, bool(saved.get("direct_with_image", False)))
 
-def model_settings_controls(default_claude_model: str) -> ModelSettings:
-    settings = ModelSettings()
+    def saved_choices(self):
+        return {"direct_provider": self.config.provider,
+                "direct_model": self.config.model or "",
+                "direct_with_image": self.with_image}
+
+
+def model_settings_controls(default_claude_model: str, *, initial=None, on_change=None) -> ModelSettings:
+    settings = initial or ModelSettings()
     ui.add_css('''
         .model-settings-card :focus-visible { box-shadow: 0 0 0 3px var(--q-primary) !important; }
         .model-settings-card .q-btn, .model-settings-card .q-radio { min-height: 44px; }
@@ -27,8 +38,14 @@ def model_settings_controls(default_claude_model: str) -> ModelSettings:
     with ui.row().classes("w-full items-center gap-3"):
         ui.icon("shield", color="primary").classes("text-2xl")
         with ui.column().classes("grow gap-1 min-w-0"):
-            summary = ui.label("내 Mac에서만 분석 · 무료").classes("font-medium break-all")
-            privacy = ui.label("계정 없이 사용 · 외부 전송 없음").classes("text-sm text-gray-600")
+            summary = ui.label(
+                f"{NAMES[settings.config.provider]} · {settings.config.model or 'CLI 기본 모델'}"
+                if settings.config.is_remote else "내 Mac에서만 분석 · 무료").classes("font-medium break-all")
+            privacy = ui.label(
+                "API 키를 다시 입력하거나 환경변수를 설정하세요. 현재는 로컬 분석을 사용합니다."
+                if settings.config.provider in {"anthropic", "openai", "xai"} and not settings.config.api_key else
+                "스캔 시 OCR 텍스트와 축소 이미지 전송" if settings.with_image else
+                "스캔 시 OCR 텍스트만 전송" if settings.config.is_remote else "계정 없이 사용 · 외부 전송 없음").classes("text-sm text-gray-600")
         open_btn = ui.button("모델 설정", icon="tune").props("outline no-caps")
 
     with ui.dialog() as dialog, ui.card().classes("model-settings-card w-full max-w-xl p-5 sm:p-7 gap-5"):
@@ -170,6 +187,8 @@ def model_settings_controls(default_claude_model: str) -> ModelSettings:
                 "스캔 시 OCR 텍스트만 전송" if config.is_remote else "계정 없이 사용 · 외부 전송 없음"
             )
             dialog.close()
+            if on_change:
+                on_change()
             ui.notify("다음 스캔에 사용할 모델을 설정했습니다.", type="positive")
 
         with ui.row().classes("w-full justify-end gap-2"):

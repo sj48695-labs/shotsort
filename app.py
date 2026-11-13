@@ -13,14 +13,16 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from nicegui import run, ui
 
 import engine
 from group_select import apply_select, range_paths, selected_bytes, selected_in_group
+import providers
 from lazy_groups import GroupPage
-from model_settings import model_settings_controls
+from model_settings import ModelSettings, model_settings_controls
 from preview_layout import (
     PREVIEW_CARD_CLASSES,
     PREVIEW_HEADER_CLASSES,
@@ -34,6 +36,18 @@ from preview_nav import PreviewNav, shortcut_action
 
 
 GROUP_PAGE_SIZE = 24
+ANALYSIS_MODE_OPTIONS = {
+    "auto": "자동 (Codex CLI → Claude CLI(텍스트) → 동의한 API → 로컬)",
+    "local": "로컬 분석만 (외부 전송 없음)",
+    "cli": "설치된 Codex/Claude CLI",
+    "api": "설치된 API Key 사용",
+    "direct": "직접 설정 (고급)",
+}
+API_PROVIDER_OPTIONS = {
+    "anthropic": "Anthropic Claude",
+    "openai": "OpenAI",
+    "xai": "xAI Grok",
+}
 
 
 @ui.page("/")
@@ -77,7 +91,27 @@ def index():
         with ui.row().classes("items-center gap-3 w-full"):
             path_in = ui.input("스캔 경로", value=str(engine.DEFAULT_SCAN_DIR)).classes("grow min-w-0").style("min-width:180px")
             scan_btn = ui.button("스캔", icon="search")
-        model_settings = model_settings_controls(engine.DEFAULT_MODEL)
+        ai_settings = engine.load_ai_settings()
+        with ui.row().classes("items-start gap-3 w-full"):
+            mode_in = ui.select(
+                ANALYSIS_MODE_OPTIONS, value=ai_settings.get("analysis_mode", "auto"),
+                label="분석 방식",
+            ).classes("w-72")
+            provider_in = ui.select(
+                API_PROVIDER_OPTIONS, value=ai_settings.get("analysis_provider", "anthropic"),
+                label="API 공급자",
+            ).classes("w-48")
+            model_select = ui.select({"__auto__": "자동 추천"}, value="__auto__", label="모델").classes("w-48")
+            model_in = ui.input(
+                "직접 모델 입력", value=ai_settings.get("analysis_model", ""),
+                placeholder="목록에 없을 때만 입력",
+            ).classes("grow")
+            img_sw = ui.switch("이미지 내용도 AI로 분석", value=bool(ai_settings.get("analysis_with_image", False)))
+        with ui.column().classes("w-full") as direct_settings_box:
+            model_settings = model_settings_controls(
+                engine.DEFAULT_MODEL, initial=ModelSettings.from_saved(ai_settings),
+                on_change=lambda: (engine.save_ai_settings(model_settings.saved_choices()), refresh_mode()),
+            )
         ui.separator()
         with ui.row().classes("items-center gap-3 w-full"):
             with ui.column().classes("gap-0 grow"):
@@ -87,6 +121,90 @@ def index():
                 )
             projects_btn = ui.button("프로젝트 관리", icon="bookmark").props("outline")
         projects_box = ui.row().classes("items-center gap-2 w-full")
+        mode_lbl = ui.label().classes("text-xs text-gray-500 break-words w-full").props('role="status" aria-live="polite"')
+        model_warning = ui.label().classes("text-xs text-amber-800")
+        model_warning.visible = False
+        reset_model_btn = ui.button("자동 추천으로 바꾸기").props("flat dense")
+        reset_model_btn.visible = False
+
+        def selected_config():
+            if mode_in.value == "direct":
+                return model_settings.config
+            model = selected_model() or (
+                engine.DEFAULT_MODEL if provider_in.value == "anthropic"
+                and mode_in.value not in {"auto", "cli"} else None
+            )
+            return providers.resolve_config(provider_in.value, model)
+
+        def selected_with_image() -> bool:
+            return model_settings.with_image if mode_in.value == "direct" else img_sw.value
+
+        def selected_model() -> str | None:
+            direct = (model_in.value or "").strip()
+            return direct or (None if model_select.value == "__auto__" else model_select.value)
+
+        def refresh_mode():
+            """Show the exact safe route before scanning; this never performs AI work."""
+            mode = mode_in.value
+            config = selected_config()
+            provider = config.provider
+            model = config.model
+            direct_settings_box.set_visibility(mode == "direct")
+            for control in (provider_in, model_select, model_in, img_sw):
+                control.set_visibility(mode != "direct")
+            catalog_mode = "cli" if mode == "cli" else "api"
+            catalog = engine.refresh_model_catalog(provider, catalog_mode)
+            options = {"__auto__": "자동 추천"}
+            if catalog:
+                options.update({name: name for name in catalog["models"]})
+            model_select.set_options(options)
+            capabilities = (providers.probe_cli_capabilities()
+                          if mode in {"auto", "cli"} else None)
+            consent = (provider in {"claude_cli", "codex_cli"} or
+                       engine.has_api_consent(provider, with_image=selected_with_image()))
+            plan = providers.resolve_execution(
+                mode, config, api_consent=consent, cli_capabilities=capabilities,
+                with_image=selected_with_image(),
+            )
+            status = engine.keychain_status(provider)
+            route = f"선택 예정: {plan.status.provider} / {plan.status.method.value}"
+            if plan.status.model:
+                route += f" / {plan.status.model}"
+            transfer = "외부 전송 있음" if plan.status.external_transfer else "외부 전송 없음"
+            capability_detail = "; ".join(
+                f"{name}: {item.reason}" for name, item in (capabilities or {}).items()
+                if item.reason
+            )
+            detail = plan.status.fallback_reason or capability_detail
+            cache = (f"모델 목록: 캐시 {len(catalog['models'])}개 · 마지막 갱신: "
+                     f"{datetime.fromtimestamp(catalog['fetched_at']).strftime('%Y-%m-%d %H:%M')}"
+                     if catalog else "모델 목록: 캐시 없음 · 자동 추천 사용")
+            if catalog and catalog["stale"]:
+                cache += " (24시간 경과)"
+            mode_lbl.text = f"{route} · {transfer} · {cache} · 환경변수 키 상태: {status}"
+            if detail:
+                mode_lbl.text += f" · CLI 상태: {providers.mask_secret(detail)}"
+
+            saved = ai_settings.get("analysis_model")
+            missing = bool(saved and catalog and saved not in catalog["models"])
+            model_warning.text = "저장된 모델을 찾을 수 없습니다. 확인 후 자동 추천으로 바꿉니다."
+            model_warning.visible = missing
+            reset_model_btn.visible = missing
+
+        async def confirm_missing_saved_model():
+            ok = await _confirm("저장된 모델을 찾을 수 없습니다. 자동 추천으로 바꿀까요?",
+                                confirm_label="자동 추천으로 바꾸기")
+            if ok:
+                model_select.value = "__auto__"
+                model_in.value = ""
+                ai_settings["analysis_model"] = ""
+                engine.save_ai_settings({"analysis_model": ""})
+                refresh_mode()
+
+        for control in (mode_in, provider_in, model_select, model_in, img_sw):
+            control.on_value_change(lambda _: refresh_mode())
+        reset_model_btn.on_click(confirm_missing_saved_model)
+        refresh_mode()
         prog_lbl = ui.label().classes("text-xs text-primary")
 
     # ── 통계 + 일괄 액션 ─────────────────────────────────────────────────────
@@ -326,12 +444,64 @@ def index():
             checks[path] = cb
 
     # ── 액션 ────────────────────────────────────────────────────────────────
+    async def request_api_consent() -> bool:
+        """Ask once for the precise provider/image transfer scope before an API call."""
+        provider = selected_config().provider
+        image_scope = "축소 이미지와 OCR 텍스트" if selected_with_image() else "OCR 텍스트"
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-sm"):
+            ui.label("API 전송 동의").classes("text-lg font-bold")
+            ui.label(
+                f"{API_PROVIDER_OPTIONS[provider]} API로 {image_scope}를 전송해 분석합니다. "
+                "이 동의는 현재 공급자와 이미지 포함 여부에만 적용됩니다."
+            ).classes("text-sm")
+            with ui.row().classes("justify-end w-full"):
+                ui.button("취소", on_click=lambda: dialog.submit(False)).props("flat")
+                ui.button("동의하고 계속", on_click=lambda: dialog.submit(True))
+        allowed = await dialog
+        if allowed:
+            engine.set_api_consent(provider, with_image=selected_with_image(), allowed=True)
+        return bool(allowed)
+
+    def show_execution(status):
+        transfer = "OCR 텍스트와 축소 이미지" if selected_with_image() else "OCR 텍스트"
+        mode_lbl.text = (
+            f"실행 예정: {status.actual_provider} / {status.actual_method.value} / "
+            f"{status.actual_model or ('CLI 기본 모델' if status.actual_method in {providers.ExecutionMethod.CODEX_CLI, providers.ExecutionMethod.CLAUDE_CLI} else '자동')} · "
+            f"{transfer + ' 외부 전송' if status.external_transfer else '외부 전송 없음'}"
+        )
+        if status.fallback_reason:
+            mode_lbl.text += f" · {providers.mask_secret(status.fallback_reason)}"
+
     async def do_scan():
         root = Path(path_in.value).expanduser()
         if not root.exists():
             ui.notify(f"경로 없음: {root}", type="negative")
             return
-        config = model_settings.config
+        mode = mode_in.value
+        config = selected_config()
+        provider = config.provider
+        model = config.model
+        capabilities = providers.probe_cli_capabilities() if mode in {"auto", "cli"} else None
+        consent = (provider in {"claude_cli", "codex_cli"} or
+                   engine.has_api_consent(provider, with_image=selected_with_image()))
+        possible_api = providers.resolve_execution(
+            mode, config, api_consent=True, cli_capabilities=capabilities,
+            with_image=selected_with_image(),
+        )
+        if (possible_api.method == providers.ExecutionMethod.API
+                and provider in API_PROVIDER_OPTIONS and not consent):
+            if not await request_api_consent():
+                ui.notify("API 전송 동의가 없어 로컬 분석을 사용합니다.", type="info")
+            consent = (provider in {"claude_cli", "codex_cli"} or
+                   engine.has_api_consent(provider, with_image=selected_with_image()))
+        engine.save_ai_settings({
+            "analysis_mode": mode,
+            "analysis_provider": provider_in.value,
+            "analysis_model": selected_model() or "",
+            "analysis_with_image": img_sw.value,
+        })
+        if mode in {"api", "direct"} and not model:
+            ui.notify("자동 추천 모델을 사용합니다. 목록에 없는 모델은 직접 입력할 수 있습니다.", type="info")
         scan_btn.props("loading")
         scan_btn.disable()
         progress.update(i=0, total=0, running=True)
@@ -340,22 +510,34 @@ def index():
             res = await run.io_bound(
                 engine.scan_images,
                 root,
-                provider=config.provider,
-                model=config.model,
+                provider=provider,
+                model=model,
                 api_key=config.api_key,
-                with_image=model_settings.with_image,
+                with_image=selected_with_image(),
+                analysis_mode=mode,
+                api_consent=consent,
                 on_item=on_scan_item,
+                on_execution=show_execution,
             )
         except Exception as e:
-            ui.notify(f"스캔 실패: {e}", type="negative")
+            ui.notify(f"스캔 실패: {providers.mask_secret(e)}", type="negative")
             return
         finally:
             progress["running"] = False
             scan_btn.props(remove="loading")
             scan_btn.enable()
+        mode_lbl.text = f"실행 결과: {res.actual_provider} / {res.actual_method.value} · " + ("외부 전송 있음" if res.external_transfer else "외부 전송 없음")
+        if res.fallback_reason:
+            mode_lbl.text += f" · {providers.mask_secret(res.fallback_reason)}"
         msg = f"완료: 신규 {res.new}개, 스킵 {res.skipped}개"
         if res.errors:
             msg += f" · 분석 실패 {len(res.errors)}개: {res.errors[0][1]}"
+        msg += f" · 실제: {res.actual_provider}/{res.actual_method.value}"
+        if res.actual_model:
+            msg += f"/{res.actual_model}"
+        msg += " · 외부 전송" if res.external_transfer else " · 외부 전송 없음"
+        if res.fallback_reason:
+            msg += f" · fallback: {providers.mask_secret(res.fallback_reason)}"
         if res.consolidate_error:
             msg += f" (그룹 정규화 실패: {res.consolidate_error})"
         ui.notify(msg, type="warning" if res.errors else "positive")
@@ -739,12 +921,12 @@ def index():
                 ui.button("확인", on_click=lambda: dialog.submit(inp.value))
         return await dialog
 
-    async def _confirm(message: str) -> bool:
+    async def _confirm(message: str, *, confirm_label: str = "휴지통으로") -> bool:
         with ui.dialog() as dialog, ui.card():
             ui.label(message)
             with ui.row().classes("justify-end w-full"):
                 ui.button("취소", on_click=lambda: dialog.submit(False)).props("flat")
-                ui.button("휴지통으로", color="red", on_click=lambda: dialog.submit(True))
+                ui.button(confirm_label, on_click=lambda: dialog.submit(True))
         return await dialog
 
     async def _trash_preview():
