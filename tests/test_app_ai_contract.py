@@ -42,7 +42,7 @@ class AppAiContractTests(unittest.TestCase):
 
     def test_credential_state_is_displayed_without_key_value(self):
         self.assertIn("engine.keychain_status", self.source)
-        self.assertIn("Keychain/환경변수 상태", self.source)
+        self.assertIn("환경변수 키 상태", self.source)
         self.assertNotIn("ui.input(\"API Key", self.source)
 
     def test_direct_mode_uses_only_approved_settings(self):
@@ -66,6 +66,31 @@ class AppAiContractTests(unittest.TestCase):
         self.assertEqual(context["selected_config"]().provider, "openai")
         self.assertEqual(context["selected_config"]().model, "draft-model")
         self.assertTrue(context["selected_with_image"]())
+
+    def test_approved_direct_settings_restore_without_screen_key(self):
+        from dataclasses import dataclass, field
+        from unittest.mock import patch
+        source = (APP.parent / "model_settings.py").read_text()
+        node = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == "ModelSettings")
+        context = dict(dataclass=dataclass, field=field, ProviderConfig=providers.ProviderConfig,
+                       resolve_config=providers.resolve_config)
+        exec(compile(ast.Module(body=[node], type_ignores=[]), "model_settings.py", "exec"), context)
+        cls = context["ModelSettings"]
+        original = cls(providers.ProviderConfig("openai", "approved", "screen-secret"), True)
+        saved = original.saved_choices()
+        self.assertNotIn("screen-secret", str(saved))
+        with patch.dict("os.environ", {}, clear=True):
+            restored = cls.from_saved(saved)
+        self.assertEqual(restored.config.provider, "openai")
+        self.assertEqual(restored.config.model, "approved")
+        self.assertIsNone(restored.config.api_key)
+        self.assertTrue(restored.with_image)
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "environment-secret"}, clear=True):
+            restored = cls.from_saved(saved)
+        self.assertEqual(restored.config.api_key, "environment-secret")
+        cli = cls.from_saved({"direct_provider": "codex_cli", "direct_model": "cli", "direct_with_image": False})
+        self.assertEqual(cli.config.model, "cli")
+        self.assertFalse(cli.with_image)
 
     def test_saved_model_disappearance_needs_confirmation(self):
         self.assertIn("저장된 모델을 찾을 수 없습니다", self.source)

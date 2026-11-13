@@ -22,7 +22,7 @@ import engine
 from group_select import apply_select, range_paths, selected_bytes, selected_in_group
 import providers
 from lazy_groups import GroupPage
-from model_settings import model_settings_controls
+from model_settings import ModelSettings, model_settings_controls
 from preview_layout import (
     PREVIEW_CARD_CLASSES,
     PREVIEW_HEADER_CLASSES,
@@ -106,9 +106,12 @@ def index():
                 "직접 모델 입력", value=ai_settings.get("analysis_model", ""),
                 placeholder="목록에 없을 때만 입력",
             ).classes("grow")
-            img_sw = ui.switch("이미지 내용도 AI로 분석", value=False)
+            img_sw = ui.switch("이미지 내용도 AI로 분석", value=bool(ai_settings.get("analysis_with_image", False)))
         with ui.column().classes("w-full") as direct_settings_box:
-            model_settings = model_settings_controls(engine.DEFAULT_MODEL, on_change=lambda: refresh_mode())
+            model_settings = model_settings_controls(
+                engine.DEFAULT_MODEL, initial=ModelSettings.from_saved(ai_settings),
+                on_change=lambda: (engine.save_ai_settings(model_settings.saved_choices()), refresh_mode()),
+            )
         ui.separator()
         with ui.row().classes("items-center gap-3 w-full"):
             with ui.column().classes("gap-0 grow"):
@@ -178,7 +181,7 @@ def index():
                      if catalog else "모델 목록: 캐시 없음 · 자동 추천 사용")
             if catalog and catalog["stale"]:
                 cache += " (24시간 경과)"
-            mode_lbl.text = f"{route} · {transfer} · {cache} · Keychain/환경변수 상태: {status}"
+            mode_lbl.text = f"{route} · {transfer} · {cache} · 환경변수 키 상태: {status}"
             if detail:
                 mode_lbl.text += f" · CLI 상태: {providers.mask_secret(detail)}"
 
@@ -484,6 +487,7 @@ def index():
             "analysis_mode": mode,
             "analysis_provider": provider_in.value,
             "analysis_model": selected_model() or "",
+            "analysis_with_image": img_sw.value,
         })
         if mode in {"api", "direct"} and not model:
             ui.notify("자동 추천 모델을 사용합니다. 목록에 없는 모델은 직접 입력할 수 있습니다.", type="info")

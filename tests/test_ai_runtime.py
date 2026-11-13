@@ -30,6 +30,7 @@ class AIRuntimeTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / "screen.png").write_bytes(b"not-an-image")
         self.conn = engine.db(sqlite3.connect(":memory:"))
+        self.real_db = engine.db
         self.db = patch.object(engine, "db", return_value=self.conn)
         self.db.start()
 
@@ -245,3 +246,49 @@ class AIRuntimeTest(unittest.TestCase):
                 self.assertNotIn("sk-test-key", result.fallback_reason)
                 if isinstance(failure, TimeoutError):
                     self.assertIn("timeout", result.fallback_reason)
+
+    def test_file_database_reopen_preserves_settings_scopes_and_catalog(self):
+        original_db = self.real_db
+        path = self.root / "state.db"
+        conn = original_db(sqlite3.connect(path))
+        settings = {"analysis_mode": "direct", "analysis_provider": "openai",
+                    "analysis_model": "saved", "analysis_with_image": True,
+                    "direct_provider": "openai", "direct_model": "approved", "direct_with_image": True}
+        engine.save_ai_settings(settings, conn)
+        engine.set_api_consent("openai", with_image=True, allowed=True, conn=conn)
+        engine.save_model_catalog("openai", "api", ["saved"], source="api", conn=conn)
+        engine.save_model_catalog("openai", "cli", ["cli-only"], conn=conn)
+        engine.save_model_catalog("xai", "api", ["xai-only"], conn=conn)
+        before = engine.load_model_catalog("openai", "api", conn=conn)
+        conn.close()
+        conn = original_db(sqlite3.connect(path))
+        try:
+            restored = engine.load_ai_settings(conn)
+            for name, value in settings.items():
+                self.assertEqual(restored[name], value)
+            self.assertTrue(engine.has_api_consent("openai", with_image=True, conn=conn))
+            self.assertFalse(engine.has_api_consent("openai", with_image=False, conn=conn))
+            self.assertFalse(engine.has_api_consent("xai", with_image=True, conn=conn))
+            with patch.object(providers, "list_api_models") as fetch:
+                self.assertEqual(engine.refresh_model_catalog("openai", "api", conn=conn), before)
+                fetch.assert_not_called()
+            self.assertEqual(engine.load_model_catalog("openai", "cli", conn=conn)["models"], ["cli-only"])
+            self.assertEqual(engine.load_model_catalog("xai", "api", conn=conn)["models"], ["xai-only"])
+            conn.execute("UPDATE model_catalog_cache SET fetched_at=0 WHERE provider='openai' AND execution_mode='api'")
+            conn.commit()
+        finally:
+            conn.close()
+        conn = original_db(sqlite3.connect(path))
+        try:
+            with patch.object(providers, "list_api_models", side_effect=RuntimeError("offline")) as fetch:
+                cached = engine.refresh_model_catalog("openai", "api", conn=conn)
+                fetch.assert_called_once()
+            self.assertEqual(cached["models"], ["saved"])
+            self.assertEqual(cached["fetched_at"], 0)
+            self.assertEqual(cached["source"], "api")
+            self.assertTrue(cached["stale"])
+            with self.assertRaises(ValueError):
+                engine.save_ai_settings({"api_key": "secret"}, conn)
+            self.assertNotIn("secret", str(engine.load_ai_settings(conn)))
+        finally:
+            conn.close()
