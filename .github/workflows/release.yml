@@ -14,7 +14,6 @@ jobs:
     env:
       SIGN_IDENTITY: ${{ secrets.SIGN_IDENTITY }}
       NOTARY_PROFILE: shotsort-notary
-      NOTARY_KEYCHAIN: ${{ runner.temp }}/shotsort-signing.keychain-db
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -53,6 +52,8 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -k "$RELEASE_KEYCHAIN_PASSWORD" "$RELEASE_KEYCHAIN"
           xcrun notarytool store-credentials "$NOTARY_PROFILE" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --keychain "$RELEASE_KEYCHAIN"
       - name: Build signed and notarized DMG
+        env:
+          NOTARY_KEYCHAIN: ${{ runner.temp }}/shotsort-signing.keychain-db
         run: ./build_app.sh
       - name: Create checksum
         run: scripts/release/verify_dmg.sh

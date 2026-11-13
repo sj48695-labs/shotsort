@@ -25,5 +25,5 @@ cp -R "$APP_PATH" "$APPLICATIONS_DIR/"
 
 INSTALLED_APP="$APPLICATIONS_DIR/shotsort.app"
 codesign --verify --deep --strict --verbose=2 "$INSTALLED_APP"
-spctl -a -vvv -t install "$INSTALLED_APP"
+spctl -a -vvv -t execute "$INSTALLED_APP"
 echo "✅ clean macOS 설치 smoke 통과"
