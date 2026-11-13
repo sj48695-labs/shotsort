@@ -193,3 +193,55 @@ class AIRuntimeTest(unittest.TestCase):
                 row = self.conn.execute("SELECT project FROM images").fetchone()
                 if not timeout:
                     self.assertEqual(row["project"], "demo")
+
+    def test_api_requires_exact_scope_or_explicit_consent_with_real_resolver(self):
+        engine.set_api_consent("openai", with_image=False, allowed=True, conn=self.conn)
+        for provider, image, consent, mode, allowed in (
+            ("openai", False, None, "api", True),
+            ("openai", False, False, "api", False),
+            ("openai", True, None, "api", False),
+            ("xai", False, None, "direct", False),
+            ("anthropic", False, None, None, False),
+            ("openai", True, True, "api", True),
+        ):
+            with self.subTest(provider=provider, image=image, consent=consent):
+                self.conn.execute("DELETE FROM images")
+                adapter = FakeAdapter()
+                with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test", "XAI_API_KEY": "sk-test",
+                                               "ANTHROPIC_API_KEY": "sk-test"}), \
+                     patch.object(providers, "create_provider", side_effect=lambda c: adapter if c.is_remote else None) as create, \
+                     patch.object(engine, "ocr", return_value="text"):
+                    result = engine.scan_images(self.root, provider=provider, model="m",
+                        with_image=image, api_consent=consent, analysis_mode=mode, consolidate=False)
+                self.assertEqual(adapter.calls, int(allowed))
+                self.assertEqual(result.external_transfer, allowed)
+                self.assertEqual(create.call_args.args[0].provider, provider if allowed else "local")
+                self.assertEqual(result.new, 1)
+
+    def test_api_failures_and_group_failure_never_try_another_provider(self):
+        for failure in (RuntimeError("401 Bearer secret"), RuntimeError("429 sk-test-key"),
+                        RuntimeError("network unreachable"), TimeoutError("timed out"), "group"):
+            with self.subTest(failure=failure):
+                self.conn.execute("DELETE FROM images")
+                adapter = FakeAdapter(None if failure == "group" else failure)
+                if failure == "group":
+                    original = adapter.generate_json
+                    def generate(**kwargs):
+                        if adapter.calls:
+                            adapter.calls += 1
+                            raise RuntimeError("network Bearer secret")
+                        return original(**kwargs)
+                    adapter.generate_json = generate
+                with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}), \
+                     patch.object(providers, "create_provider", return_value=adapter) as create, \
+                     patch.object(engine, "ocr", return_value="text"):
+                    result = engine.scan_images(self.root, provider="openai", model="m",
+                        analysis_mode="api", api_consent=True, with_image=True)
+                create.assert_called_once()
+                self.assertEqual(result.actual_provider, "local")
+                self.assertTrue(result.external_transfer)
+                self.assertEqual(result.new, 1)
+                self.assertNotIn("secret", result.fallback_reason)
+                self.assertNotIn("sk-test-key", result.fallback_reason)
+                if isinstance(failure, TimeoutError):
+                    self.assertIn("timeout", result.fallback_reason)

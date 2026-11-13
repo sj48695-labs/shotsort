@@ -1268,13 +1268,11 @@ def scan_images(
     config = providers.resolve_config(provider, selected_model, api_key=api_key)
     if with_image and config.provider in {"claude_cli", "codex_cli"}:
         raise ValueError("PC 계정 연결은 OCR 텍스트만 분석합니다. 이미지 분석은 API 연결을 사용하세요.")
-    # Explicit legacy API selection remains compatible, while new mode-based
-    # callers must provide (or persist) transfer consent.
+    # 공급자 선택은 전송 동의가 아니다. 저장 동의도 정확한 이미지 범위만 허용한다.
     conn = db()
     legacy_remote_request = legacy_provider or bool(use_llm)
     consent = (api_consent if api_consent is not None else
-               (True if legacy_remote_request and config.is_remote else
-                has_api_consent(config.provider, with_image=with_image, conn=conn)))
+               has_api_consent(config.provider, with_image=with_image, conn=conn))
     mode = analysis_mode or (providers.AnalysisMode.DIRECT if legacy_remote_request and config.is_remote
                              else providers.AnalysisMode.LOCAL)
     plan = providers.resolve_execution(mode, config, api_consent=consent,
@@ -1390,7 +1388,8 @@ def scan_images(
 
 def classify_provider_error(error: Exception) -> str:
     """Stable, secret-free error categories used by fallback status/UI."""
-    if isinstance(error, providers.ExecutionTimeout):
+    if isinstance(error, (providers.ExecutionTimeout, TimeoutError)) or any(
+            token in str(error).lower() for token in ("timeout", "timed out")):
         return "timeout"
     if isinstance(error, providers.AuthenticationError):
         return "authentication"
