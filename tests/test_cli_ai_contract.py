@@ -103,3 +103,78 @@ class CliAiContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class CliEngineIntegrationTest(unittest.TestCase):
+    def test_real_scan_resolver_adapter_database_and_preflight_order(self):
+        import json
+        import sqlite3
+        import engine
+        scenarios = (("auto", "codex", False, False), ("auto", "claude", False, False),
+                     ("auto", "claude", True, False), ("api", None, False, False),
+                     ("api", None, False, True), ("local", "codex", False, True))
+        for mode, vendor, image, consent in scenarios:
+            with self.subTest(mode=mode, vendor=vendor, image=image, consent=consent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "screen.png").write_bytes(b"image")
+                conn = engine.db(sqlite3.connect(root / "state.db"))
+                self.addCleanup(conn.close)
+                capabilities = {
+                    "codex": providers.ProviderCapability.codex_cli(available=vendor == "codex", logged_in=True),
+                    "claude": providers.ProviderCapability.claude_cli(available=vendor == "claude", logged_in=True)}
+                argv = ["scan", directory, "--provider", mode, "--direct-provider", "openai", "--model", "test-model"]
+                if image:
+                    argv.append("--with-image")
+                if consent:
+                    argv.append("--allow-api-transfer")
+                args = cli.build_parser().parse_args(argv)
+                output = io.StringIO()
+                calls = []
+                tag = {"project": "demo", "kind": "ui", "summary": "ok", "deletable": False, "confidence": .9}
+                def runner(command, **kwargs):
+                    self.assertIn("실행 예정:", output.getvalue())
+                    self.assertIn("external_transfer=yes", output.getvalue())
+                    calls.append(command[0])
+                    # 2차 그룹화 응답도 같은 adapter 경계를 통과한다.
+                    response = tag if "OCR 텍스트" in kwargs["input"] else {"assignments": [{"id": 1, "group": "demo"}]}
+                    if command[0] == "codex":
+                        Path(command[command.index("--output-last-message") + 1]).write_text(json.dumps(response))
+                        stdout = "progress"
+                    else:
+                        stdout = json.dumps({"structured_output": response})
+                    return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+                def create(config):
+                    if config.provider == "local":
+                        return None
+                    if config.provider == "openai":
+                        class FailedAPI:
+                            def generate_json(self, **kwargs):
+                                self_test.assertIn("실행 예정:", output.getvalue())
+                                calls.append("openai")
+                                raise RuntimeError("429 Bearer api-secret")
+                        return FailedAPI()
+                    adapter = providers.CodexCliProvider if config.provider == "codex" else providers.ClaudeCliProvider
+                    return adapter(config, runner=runner)
+                self_test = self
+                with patch.object(engine, "db", return_value=conn), \
+                     patch.dict("os.environ", {"OPENAI_API_KEY": "sk-not-displayed"}), \
+                     patch.object(providers, "probe_codex_cli", return_value=capabilities["codex"]), \
+                     patch.object(providers, "probe_claude_cli", return_value=capabilities["claude"]), \
+                     patch.object(providers, "create_provider", side_effect=create) as factory, \
+                     patch.object(engine, "ocr", return_value="screen text"), \
+                     contextlib.redirect_stdout(output):
+                    cli.cmd_scan(args)
+                text = output.getvalue()
+                self.assertIn("실행 예정:", text)
+                self.assertIn("실행 결과:", text)
+                self.assertNotIn("api-secret", text)
+                self.assertNotIn("sk-not-displayed", text)
+                self.assertEqual(conn.execute("SELECT count(*) FROM images").fetchone()[0], 1)
+                if vendor and mode != "local" and not image:
+                    self.assertIn(vendor, calls)
+                    self.assertEqual(conn.execute("SELECT project FROM images").fetchone()[0], "demo")
+                elif mode == "api" and consent:
+                    self.assertEqual(calls, ["openai"])
+                    self.assertIn("provider=local", text)
+                else:
+                    self.assertEqual(calls, [])
+                self.assertEqual(factory.call_count, 1)

@@ -1252,6 +1252,7 @@ def scan_images(
     consolidate: bool = True,
     project_hints: list[str] | None = None,
     on_item: ItemCallback | None = None,
+    on_execution: Callable[[ScanResult], None] | None = None,
 ) -> ScanResult:
     """이미지를 분석해 DB 에 저장하고(캐시되지 않은 것만), 2차 그룹 정규화까지 수행."""
     legacy_provider = provider is not None
@@ -1298,6 +1299,9 @@ def scan_images(
         res.actual_model = None
         res.external_transfer = False
         res.fallback_reason = reason
+    if on_execution:
+        on_execution(res)
+    res.external_transfer = False
     imgs = find_images(root)
     res.total = len(imgs)
     if not imgs:
@@ -1318,6 +1322,8 @@ def scan_images(
 
         text = ocr(path)
         try:
+            if adapter:
+                res.external_transfer = True
             tag = (classify_with_provider(adapter, text, path, with_image, project_rules)
                    if adapter else classify_local(text, path))
         except Exception as e:
@@ -1364,6 +1370,8 @@ def scan_images(
 
     if consolidate:
         try:
+            if remote:
+                res.external_transfer = True
             consolidate_all(
                 conn=conn, use_llm=remote, provider_adapter=adapter,
                 project_hints=project_hints, paths=imgs

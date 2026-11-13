@@ -121,7 +121,7 @@ def index():
                 )
             projects_btn = ui.button("프로젝트 관리", icon="bookmark").props("outline")
         projects_box = ui.row().classes("items-center gap-2 w-full")
-        mode_lbl = ui.label().classes("text-xs text-gray-500")
+        mode_lbl = ui.label().classes("text-xs text-gray-500 break-words w-full").props('role="status" aria-live="polite"')
         model_warning = ui.label().classes("text-xs text-amber-800")
         model_warning.visible = False
         reset_model_btn = ui.button("자동 추천으로 바꾸기").props("flat dense")
@@ -192,7 +192,8 @@ def index():
             reset_model_btn.visible = missing
 
         async def confirm_missing_saved_model():
-            ok = await _confirm("저장된 모델을 찾을 수 없습니다. 자동 추천으로 바꿀까요?")
+            ok = await _confirm("저장된 모델을 찾을 수 없습니다. 자동 추천으로 바꿀까요?",
+                                confirm_label="자동 추천으로 바꾸기")
             if ok:
                 model_select.value = "__auto__"
                 model_in.value = ""
@@ -447,7 +448,7 @@ def index():
         """Ask once for the precise provider/image transfer scope before an API call."""
         provider = selected_config().provider
         image_scope = "축소 이미지와 OCR 텍스트" if selected_with_image() else "OCR 텍스트"
-        with ui.dialog() as dialog, ui.card().classes("w-96"):
+        with ui.dialog() as dialog, ui.card().classes("w-full max-w-sm"):
             ui.label("API 전송 동의").classes("text-lg font-bold")
             ui.label(
                 f"{API_PROVIDER_OPTIONS[provider]} API로 {image_scope}를 전송해 분석합니다. "
@@ -460,6 +461,16 @@ def index():
         if allowed:
             engine.set_api_consent(provider, with_image=selected_with_image(), allowed=True)
         return bool(allowed)
+
+    def show_execution(status):
+        transfer = "OCR 텍스트와 축소 이미지" if selected_with_image() else "OCR 텍스트"
+        mode_lbl.text = (
+            f"실행 예정: {status.actual_provider} / {status.actual_method.value} / "
+            f"{status.actual_model or ('CLI 기본 모델' if status.actual_method in {providers.ExecutionMethod.CODEX_CLI, providers.ExecutionMethod.CLAUDE_CLI} else '자동')} · "
+            f"{transfer + ' 외부 전송' if status.external_transfer else '외부 전송 없음'}"
+        )
+        if status.fallback_reason:
+            mode_lbl.text += f" · {providers.mask_secret(status.fallback_reason)}"
 
     async def do_scan():
         root = Path(path_in.value).expanduser()
@@ -506,6 +517,7 @@ def index():
                 analysis_mode=mode,
                 api_consent=consent,
                 on_item=on_scan_item,
+                on_execution=show_execution,
             )
         except Exception as e:
             ui.notify(f"스캔 실패: {providers.mask_secret(e)}", type="negative")
@@ -514,6 +526,9 @@ def index():
             progress["running"] = False
             scan_btn.props(remove="loading")
             scan_btn.enable()
+        mode_lbl.text = f"실행 결과: {res.actual_provider} / {res.actual_method.value} · " + ("외부 전송 있음" if res.external_transfer else "외부 전송 없음")
+        if res.fallback_reason:
+            mode_lbl.text += f" · {providers.mask_secret(res.fallback_reason)}"
         msg = f"완료: 신규 {res.new}개, 스킵 {res.skipped}개"
         if res.errors:
             msg += f" · 분석 실패 {len(res.errors)}개: {res.errors[0][1]}"
@@ -906,12 +921,12 @@ def index():
                 ui.button("확인", on_click=lambda: dialog.submit(inp.value))
         return await dialog
 
-    async def _confirm(message: str) -> bool:
+    async def _confirm(message: str, *, confirm_label: str = "휴지통으로") -> bool:
         with ui.dialog() as dialog, ui.card():
             ui.label(message)
             with ui.row().classes("justify-end w-full"):
                 ui.button("취소", on_click=lambda: dialog.submit(False)).props("flat")
-                ui.button("휴지통으로", color="red", on_click=lambda: dialog.submit(True))
+                ui.button(confirm_label, on_click=lambda: dialog.submit(True))
         return await dialog
 
     async def _trash_preview():

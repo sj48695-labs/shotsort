@@ -92,6 +92,26 @@ class AppAiContractTests(unittest.TestCase):
         self.assertEqual(cli.config.model, "cli")
         self.assertFalse(cli.with_image)
 
+    def test_missing_model_confirmation_keeps_input_until_approved(self):
+        import asyncio
+        from unittest.mock import Mock, AsyncMock
+        node = next(n for n in ast.walk(ast.parse(self.source))
+                    if isinstance(n, ast.AsyncFunctionDef) and n.name == "confirm_missing_saved_model")
+        for approved in (False, True):
+            confirm = AsyncMock(return_value=approved)
+            settings = {"analysis_model": "missing"}
+            model = SimpleNamespace(value="missing")
+            select = SimpleNamespace(value="missing")
+            save = Mock()
+            context = dict(_confirm=confirm, model_select=select, model_in=model,
+                ai_settings=settings, engine=SimpleNamespace(save_ai_settings=save), refresh_mode=Mock())
+            exec(compile(ast.Module(body=[node], type_ignores=[]), str(APP), "exec"), context)
+            asyncio.run(context["confirm_missing_saved_model"]())
+            self.assertEqual(model.value, "" if approved else "missing")
+            self.assertEqual(settings["analysis_model"], "" if approved else "missing")
+            self.assertEqual(save.call_count, int(approved))
+            self.assertEqual(confirm.call_args.kwargs["confirm_label"], "자동 추천으로 바꾸기")
+
     def test_saved_model_disappearance_needs_confirmation(self):
         self.assertIn("저장된 모델을 찾을 수 없습니다", self.source)
         self.assertIn("confirm_missing_saved_model", self.source)

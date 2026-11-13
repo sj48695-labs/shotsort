@@ -75,6 +75,7 @@ def cmd_scan(args):
         force=args.force,
         project_hints=hints,
         on_item=on_item,
+        on_execution=lambda status: _print_execution_status("실행 예정", status),
     )
 
     if res.total == 0:
@@ -97,10 +98,11 @@ def _print_execution_status(label, result) -> None:
     method = getattr(result.actual_method, "value", result.actual_method)
     catalog_cache = bool(getattr(result, "catalog_from_cache",
                                  getattr(result, "model_catalog_from_cache", False)))
+    default_model = "CLI 기본 모델" if method in {"codex_cli", "claude_cli"} else "auto"
     fields = [
         f"provider={providers.mask_secret(result.actual_provider)}",
         f"method={providers.mask_secret(method)}",
-        f"model={providers.mask_secret(result.actual_model) if result.actual_model else 'auto'}",
+        f"model={providers.mask_secret(result.actual_model) if result.actual_model else default_model}",
         f"external_transfer={'yes' if result.external_transfer else 'no'}",
         f"catalog={'cache' if catalog_cache else 'fresh'}",
     ]
