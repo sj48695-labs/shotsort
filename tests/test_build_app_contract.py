@@ -1,6 +1,9 @@
 """DMG signing/notarization boundary contracts without invoking macOS tools."""
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,6 +12,7 @@ BUILD_SCRIPT = Path(__file__).parents[1] / "build_app.sh"
 ENTITLEMENTS = Path(__file__).parents[1] / "packaging" / "entitlements.plist"
 RELEASE_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "release.yml"
 SMOKE_SCRIPT = Path(__file__).parents[1] / "scripts" / "release" / "smoke_install.sh"
+CHECKSUM_SCRIPT = SMOKE_SCRIPT.with_name("verify_dmg.sh")
 
 
 class BuildAppContractTests(unittest.TestCase):
@@ -79,6 +83,30 @@ class BuildAppContractTests(unittest.TestCase):
         self.assertIn('spctl -a -vvv -t execute "$INSTALLED_APP"', smoke)
         self.assertNotIn('-t install', smoke)
         self.assertNotIn('-t install', self.script)
+
+    def test_workflow_release_scripts_are_executable(self):
+        for script in (BUILD_SCRIPT, SMOKE_SCRIPT, CHECKSUM_SCRIPT):
+            with self.subTest(script=script.name):
+                self.assertTrue(os.access(script, os.X_OK), f"실행 권한이 없습니다: {script}")
+
+    def test_checksum_verifies_from_the_dmg_directory_and_rejects_modified_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "dist").mkdir()
+            dmg = root / "dist" / "shotsort.dmg"
+            dmg.write_bytes(b"shotsort")
+            for checksum in ("dist/shotsort.dmg.sha256", "custom.sha256"):
+                with self.subTest(checksum=checksum):
+                    command = ["bash", str(CHECKSUM_SCRIPT), "dist/shotsort.dmg", checksum]
+                    generated = subprocess.run(command, cwd=root, capture_output=True, text=True)
+                    self.assertEqual(generated.returncode, 0, generated.stderr)
+                    environment = dict(os.environ, VERIFY_CHECKSUM="1")
+                    verified = subprocess.run(command, cwd=root, env=environment, capture_output=True, text=True)
+                    self.assertEqual(verified.returncode, 0, verified.stderr)
+                    dmg.write_bytes(b"changed")
+                    rejected = subprocess.run(command, cwd=root, env=environment, capture_output=True, text=True)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    dmg.write_bytes(b"shotsort")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,20 @@
 
 이 파일은 증적 보관용이다. `/plan`·`/code` 기본 입력은 옆 `7-install-landing.md`이며, 실패 원인 등 필요한 절만 명시적으로 읽는다.
 
+## 2026-11-13 코드 리뷰 및 결함 수정
+
+- 시작 HEAD와 PR #18 head는 `ecf0d6329c82f61df394d940d08c8e2f9f76789c`였다. 사용자 제공 원격 SHA와 다르므로 실제 체크아웃을 기준으로 `origin/main...HEAD` 변경을 검토했다. 시작 작업 트리는 깨끗했다.
+- 플랜과 이슈에 `## Spec` 및 S#가 없어 이슈 Phase별 조건·수용 조건과 직접 대조했다. 최신 PM 지침에 따라 서명·공증 구현을 반복하지 않았다.
+- [P1] `.github/workflows/release.yml`이 직접 실행하는 `smoke_install.sh`, `verify_dmg.sh`가 Git 모드 `100644`여서 자격증명 연결 후에도 실행 권한 오류가 발생한다. 두 파일을 `100755`로 수정하고 실행 권한 회귀 테스트를 추가했다.
+- [P2] `verify_dmg.sh`가 생성한 checksum에는 DMG 파일명만 있지만 검증은 호출 디렉터리에서 실행해 `VERIFY_CHECKSUM=1 bash scripts/release/verify_dmg.sh dist/shotsort.dmg`가 정상 파일에도 실패한다. checksum 경로를 절대 경로로 보존하고 DMG 디렉터리에서 검증하도록 수정했다. 기본·별도 checksum 경로의 정상 검증 및 변조 거부를 실제 shasum으로 확인한다.
+- 위 두 회귀 테스트는 수정 전 실행 권한 2건·정상 checksum 검증 2건에서 실패했고 수정 후 통과했다. `python3 -m unittest tests.test_build_app_contract tests.test_landing_contract -v`: 17개 통과. `bash -n build_app.sh scripts/release/smoke_install.sh scripts/release/verify_dmg.sh`, `git diff --check` 통과. 전체 테스트와 앱 빌드는 실행하지 않았다.
+- Phase 1: 충족 — 랜딩 준비 중·조건부 checksum·피드백 카피는 `tests/test_landing_contract.py`로 확인. `gh release view`에서 v0.1.1 무서명·미공증 명시 및 우회 안내 제거를 재확인했다. 앱·랜딩 UI 변경 없음.
+- Phase 2: 충족 — `gh pr view`에서 #12 MERGED, #10 CLOSED, #18 OPEN/Draft. 공개 랜딩 HTTP 200(6640바이트), 데모 HTTP 200(89650바이트), 준비 중·데모·source=landing 존재를 확인했다.
+- Phase 3: 미충족(운영 차단) — `gh secret list --json name` 결과 `[]`. 최신 v0.1.1 asset은 shotsort.dmg 하나이며 checksum 파일이 없다. 실제 새 공증·staple 릴리스, CI 서명 검사 성공, 새 기기 첫 실행 증거 없음. 코드 계약 통과로 대체하지 않는다.
+- 수용 조건 1(최신 DMG 무우회 실행): 미충족 — 공증 릴리스·새 기기 실행 증거 없음. 수용 조건 2(랜딩 1클릭으로 설치 가능한 최신 산출물): 미충족 — CTA는 현재 무서명 v0.1.1로 이동하며 공증 준비 중임을 정직하게 안내한다. 증거 확보 전 일반 설치 안내로 바꾸지 않는다.
+- 이번 브라우저 연결은 초기화 중 `node:process` 가져오기 제한으로 실패했다. 웹 조회 도구도 공개 URL 접근 오류를 반환했다. 별도 HTTP 요청으로 공개 파일 존재만 확인했으며 1280/390·키보드·폼 상호작용 재검증으로 주장하지 않는다. 기존 P3 브라우저 기록은 유지한다.
+- 판정: 발견한 코드 결함 수정 완료, 이슈 전체 수용 조건은 운영 차단으로 미충족. pass 금지. 태그·릴리스·secret·외부 댓글·push·PR 상태 변경 없음.
+
 ## 2026-11-13 재계획 검증
 
 - 현재 브랜치 `7-install-landing`, 작업 시작 HEAD 및 PR #18 head `ae9a9141c9f25e88c51319dc83c414408ba5bcba`. 작업 시작 시 clean.

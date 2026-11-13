@@ -101,6 +101,8 @@
 
 ## 검증·완료·권한 경계
 
+2026-11-13 코드 리뷰에서 기존 서명 구현과 별개로 배포 스크립트 실행 권한 누락 및 checksum 검증 기준 디렉터리 결함을 재현했다. 수정 범위는 `scripts/release/smoke_install.sh`의 실행 권한, `scripts/release/verify_dmg.sh`의 실행 권한·검증 경로, `tests/test_build_app_contract.py`의 회귀 검증이다. 이는 실제 결함 수정이며 공증 운영 완료를 의미하지 않는다. P4 운영 차단·P5 보류를 유지한다. 상세 판정은 옆 log의 코드 리뷰 절에 기록한다.
+
 1. 지금 `/plan`은 조사·plan/log 작성·문서 검증·커밋까지만 한다. rebase·worktree/브랜치 전환/삭제·새 child/PR 생성·push·Ready·merge·auto-merge는 실행하지 않는다. PR #18은 Draft 유지.
 2. 운영 phase는 제품 코드 변경 없이 증적을 커밋한다. plan 완료 마커와 옆 log를 항상 `git add -f`로 함께 보존한다. 새 필수 조건은 log에만 두지 않고 plan에 반영한다.
 3. 코드 계약 테스트는 실제 Apple 공증이나 브라우저 검증을 대신하지 않는다. plan 문서만 바꾸는 이번 실행은 테스트를 재실행하지 않는다.
